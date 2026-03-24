@@ -1,4 +1,4 @@
-﻿# WhisperDesktop（Windows）
+# WhisperDesktop（Windows）
 
 WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字工具，  
 基于 OpenAI Whisper 模型的 C/C++ 实现，可将音频、视频或麦克风输入转录为文本。
@@ -113,11 +113,12 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 
 - 基于 Whisper 模型的本地语音识别
 - 支持批量文件转录与实时麦克风转录
-- Windows 原生实现：基于 MSVC v145 开发，无需 Python 或额外运行时
-- 支持 GPU 加速（Direct3D 11）：适配 RTX 3070 Ti 等主流显卡
-- 新增 Whisper V3 Turbo 模型支持：兼顾识别速度与准确率
+- Windows 原生实现：已原生兼容 MSVC v143 工具链，无需 Python 或任何额外运行时
+- 支持 GPU 加速（Direct3D 11）：适配全系主流显卡
+- **独家核心修复：彻底解决视频结尾处因音视频轨道长度不符引起的“大段静音死循环/幻觉”Bug，处理大型音视频稳如磐石。**
+- **智能体(Agent)命令行引擎：全新打造的 `whisper-cli.exe` 彻底解决 Windows 控制台输出中文 `????` 乱码问题，支持无颜色纯净输出，专为脚本调用与大模型自动化爬取而生。**
 - 深度支持中文与粤语：优化多语言代码映射，提供原生粤语选项
-- 中文界面与调试优化：支持控制台日志路径自定义，适合日常及工程使用
+- 中文UI界面优化：细化输出格式后缀名提示，极致小白友好
 
 ---
 
@@ -131,14 +132,14 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 
 ## 二次开发与改动说明
 
-本项目基于上游 Whisper Windows 实现进行整理与二次开发，主要包括：
+本项目基于上游 Whisper Windows 实现进行深度优化与二次开发，近期主要改动包括：
 
-- 界面与交互优化，简化使用流程
-- 中文界面与提示信息（部分由 AI 辅助翻译并调整）
-- 使用体验与稳定性改进
-- 功能取舍与精简，面向日常使用场景
+- **深度引擎Bug修复**：重写了 Media Foundation 的音频真实样本计算策略，并追加静态跳步启发式检测，双重防线彻底根除末尾静音陷阱现象。
+- **控制台完美汉化**：重写了 C++ 控制台 Locale 激活代码与文本流输出逻辑，摒弃容易引发撕裂宽字符的彩色打印流，实现纯净化中文打印。
+- 界面与交互体验优化，补充了 UI 选项后缀名标识。
+- 底层工程配置更迭，全面一键无缝适配更通用的 Visual Studio v143 编译工具链。
 
-> 本仓库更侧重“拿来即用”，而非底层实现细节。
+> 本仓库侧重于“拿来即用”并**极度适合直接集成至现代自动化 AI Agent 智能体底层调用**。
 
 ---
 
