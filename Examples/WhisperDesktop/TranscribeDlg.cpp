@@ -114,10 +114,10 @@ void TranscribeDlg::printModelDescription()
 void TranscribeDlg::populateOutputFormats()
 {
     transcribeOutFormat.AddString( L"\u4E0D\u8F93\u51FA" );
-	transcribeOutFormat.AddString( L"\u6587\u672C\u6587\u4EF6" );
-	transcribeOutFormat.AddString( L"\u5E26\u65F6\u95F4\u6233\u7684\u6587\u672C" );
-	transcribeOutFormat.AddString( L"SubRip \u5B57\u5E55" );
-	transcribeOutFormat.AddString( L"WebVTT \u5B57\u5E55" );
+	transcribeOutFormat.AddString( L"\u6587\u672C\u6587\u4EF6\uFF08.txt\uFF09" );
+	transcribeOutFormat.AddString( L"\u5E26\u65F6\u95F4\u6233\u7684\u6587\u672C\uFF08.txt\uFF09" );
+	transcribeOutFormat.AddString( L"SubRip \u5B57\u5E55\uFF08.srt\uFF09" );
+	transcribeOutFormat.AddString( L"WebVTT \u5B57\u5E55\uFF08.vtt\uFF09" );
 }
 
 // CBN_SELCHANGE notification for IDC_OUTPUT_FORMAT combobox
