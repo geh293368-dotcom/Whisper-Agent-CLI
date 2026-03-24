@@ -782,6 +782,24 @@ HRESULT COMLIGHTCALL ContextImpl::runFullImpl( const sFullParams& params, const 
 				}
 			}
 		}
+
+		bool no_text = true;
+		for( size_t j = 0; j < tokens_cur.size(); j++ )
+		{
+			if( tokens_cur[ j ].id < vocab.token_eot )
+			{
+				no_text = false;
+				break;
+			}
+		}
+
+		if( no_text && seek_delta < 100 * WHISPER_CHUNK_SIZE / 2 )
+		{
+			// The model hallucinated a tiny or empty timestamp sequence on silence.
+			// Force it to skip the entire 30-second window to avoid an infinite fallback loop.
+			seek_delta = 100 * WHISPER_CHUNK_SIZE;
+		}
+
 		seek += seek_delta;
 	}
 

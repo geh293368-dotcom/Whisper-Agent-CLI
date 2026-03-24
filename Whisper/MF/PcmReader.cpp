@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "PcmReader.h"
 #include <mfapi.h>
 #include <Mferror.h>
@@ -246,18 +246,14 @@ namespace
 
 	HRESULT getDuration( IMFSourceReader* reader, size_t& length, bool mono, const iAudioReader* iar )
 	{
-		HRESULT hr = isMp3Decoder( reader );
+		// 强制所有格式都通过预解码计算出真实的音频样本数，彻底消除音视频轨道长度不一致导致的静音幻觉
+		HRESULT hr = getPreciseDuration( reader, length, mono, iar );
 		if( SUCCEEDED( hr ) )
 		{
-			if( S_OK == hr )
-			{
-				return getPreciseDuration( reader, length, mono, iar );
-			}
+			return hr; // 精确计算成功，直接返回
 		}
-		else
-			logWarningHr( hr, u8"isMp3Decoder" );
 
-		// Find out the length
+		// 容错处理：如果精确计算因为某些异常失败，回退到读取文件头部元数据的旧逻辑
 		int64_t durationTicks;
 		CHECK( getStreamDuration( reader, durationTicks ) );
 
