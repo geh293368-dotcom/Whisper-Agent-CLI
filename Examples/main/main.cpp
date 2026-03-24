@@ -4,7 +4,10 @@
 #include "../../ComLightLib/comLightClient.h"
 #include "miscUtils.h"
 #include <array>
+#include <locale.h>
 #include <atomic>
+#include <atomic>
+#include <windows.h>
 #include "textWriter.h"
 using namespace Whisper;
 
@@ -83,11 +86,11 @@ namespace
 						const sToken& tok = tokens[ seg.firstToken + j ];
 						if( !params.print_special && ( tok.flags & eTokenFlags::Special ) )
 							continue;
-						wprintf( L"%S%s%S", k_colors[ colorIndex( tok ) ], utf16( tok.text ).c_str(), "\033[0m" );
+						printf( "%s%s%s", k_colors[ colorIndex( tok ) ], tok.text, "\033[0m" );
 					}
 				}
 				else
-					wprintf( L"%s", utf16( seg.text ).c_str() );
+					printf( "%s", seg.text );
 				fflush( stdout );
 				continue;
 			}
@@ -128,12 +131,12 @@ namespace
 					const sToken& tok = tokens[ seg.firstToken + j ];
 					if( !params.print_special && ( tok.flags & eTokenFlags::Special ) )
 						continue;
-					wprintf( L"%S%s%S", k_colors[ colorIndex( tok ) ], utf16( tok.text ).c_str(), "\033[0m" );
+					printf( "%s%s%s", k_colors[ colorIndex( tok ) ], tok.text, "\033[0m" );
 				}
 				printf( "\n" );
 			}
 			else
-				wprintf( L"[%S --> %S]  %S%s\n", to_timestamp( seg.time.begin ).c_str(), to_timestamp( seg.time.end ).c_str(), speaker.c_str(), utf16( seg.text ).c_str() );
+				printf( "[%s --> %s]  %s%s\n", to_timestamp( seg.time.begin ).c_str(), to_timestamp( seg.time.end ).c_str(), speaker.c_str(), seg.text );
 		}
 		return S_OK;
 	}
@@ -173,7 +176,8 @@ static void __stdcall setPrompt( const int* ptr, int length, void* pv )
 
 int wmain( int argc, wchar_t* argv[] )
 {
-	// Whisper::dbgCompareTraces( LR"(C:\Temp\2remove\Whisper\ref.bin)", LR"(C:\Temp\2remove\Whisper\gpu.bin )" ); return 0;
+	SetConsoleOutputCP(CP_UTF8);
+	setlocale(LC_ALL, ".UTF8");
 
 	// Tell logger to use the standard output stream for the messages
 	{
