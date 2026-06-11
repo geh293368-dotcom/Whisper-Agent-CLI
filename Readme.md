@@ -35,6 +35,11 @@ WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字�
 
 将 `Examples\WhisperDesktop\WhisperDesktop.vcxproj` 设为启动项目后直接运行即可。
 
+仓库同时包含现代 WPF 界面，可将
+`Examples\WhisperDesktop.Wpf\WhisperDesktop.Wpf.csproj` 设为启动项目。当前开发环境使用
+`.NET 9`，新界面会复用同一份 `Whisper.dll` 与 `WhisperNet`，支持模型加载、批量队列、
+任务取消、实时文本以及 TXT/SRT/WebVTT 输出。
+
 首次运行时仍需自行准备 Whisper 模型文件，例如：
 
 - `models\ggml-medium.bin`

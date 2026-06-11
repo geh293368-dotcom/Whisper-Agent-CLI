@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <AssemblyName>WhisperDesktop.Modern</AssemblyName>
+    <RootNamespace>WhisperDesktop.Modern</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\WhisperNet\WhisperNet.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\x64\$(Configuration)\Whisper.dll" Link="Whisper.dll" Condition="Exists('..\..\x64\$(Configuration)\Whisper.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

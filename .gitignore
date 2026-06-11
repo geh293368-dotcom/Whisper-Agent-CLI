@@ -15,6 +15,10 @@ Examples/TranscribeCS/obj/
 *.user
 Examples/MicrophoneCS/obj/
 Examples/MicrophoneCS/bin/
+Examples/WhisperDesktop.Wpf/bin/
+Examples/WhisperDesktop.Wpf/obj/
+Tools/ModernUiTests/bin/
+Tools/ModernUiTests/obj/
 Tools/PerfSummary/bin/
 Tools/PerfSummary/obj/
 packages/
