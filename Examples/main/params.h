@@ -29,6 +29,7 @@ struct whisper_params
 	std::string language = "en";
 	std::wstring model = L"models/ggml-base.en.bin";
 	std::wstring gpu;
+	std::string engine = "d3d11"; // "cuda", "cpu", "d3d11"
 	std::string prompt;
 	std::vector<std::wstring> fname_inp;
 

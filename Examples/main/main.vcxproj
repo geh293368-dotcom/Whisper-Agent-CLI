@@ -82,11 +82,13 @@
     <ClCompile Include="miscUtils.cpp" />
     <ClCompile Include="params.cpp" />
     <ClCompile Include="textWriter.cpp" />
+    <ClCompile Include="whisperCppBackend.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="miscUtils.h" />
     <ClInclude Include="params.h" />
     <ClInclude Include="textWriter.h" />
+    <ClInclude Include="whisperCppBackend.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Whisper\Whisper.vcxproj">

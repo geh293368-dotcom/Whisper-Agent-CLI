@@ -28,8 +28,9 @@ void whisper_print_usage( int argc, wchar_t** argv, const whisper_params& params
 	fprintf( stderr, "\n" );
 	fprintf( stderr, "options:\n" );
 	fprintf( stderr, "  -h,       --help          [default] show this help message and exit\n" );
-	fprintf( stderr, "  -la,      --list-adapters List graphic adapters and exit\n" );
-	fprintf( stderr, "  -gpu,     --use-gpu       The graphic adapter to use for inference\n" );
+	fprintf( stderr, "  -e,       --engine ENGINE [%-7s] inference engine: cuda, cpu, d3d11\n", params.engine.c_str() );
+	fprintf( stderr, "  -la,      --list-adapters List graphic adapters and exit (d3d11 only)\n" );
+	fprintf( stderr, "  -gpu,     --use-gpu       The graphic adapter to use for inference (d3d11 only)\n" );
 	fprintf( stderr, "  -t N,     --threads N     [%-7d] number of threads to use during computation\n", params.n_threads );
 	fprintf( stderr, "  -p N,     --processors N  [%-7d] number of processors to use during computation\n", params.n_processors );
 	fprintf( stderr, "  -ot N,    --offset-t N    [%-7d] time offset in milliseconds\n", params.offset_t_ms );
@@ -115,6 +116,7 @@ bool whisper_params::parse( int argc, wchar_t* argv[] )
 		else if( arg == L"-m" || arg == L"--model" ) { model = argv[ ++i ]; }
 		else if( arg == L"-f" || arg == L"--file" ) { fname_inp.push_back( argv[ ++i ] ); }
 		else if( arg == L"-gpu" || arg == L"--use-gpu" ) { gpu = argv[ ++i ]; }
+		else if( arg == L"-e" || arg == L"--engine" ) { engine = utf8( argv[ ++i ] ); }
 		else if( arg == L"--prompt" ) { prompt = utf8( argv[ ++i ] ); }
 		else
 		{

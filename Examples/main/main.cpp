@@ -1,9 +1,11 @@
 #include "params.h"
+#include "whisperCppBackend.h"
 #include "../../Whisper/API/iContext.cl.h"
 #include "../../Whisper/API/iMediaFoundation.cl.h"
 #include "../../ComLightLib/comLightClient.h"
 #include "miscUtils.h"
 #include <array>
+#include <functional>
 #include <locale.h>
 #include <atomic>
 #include <atomic>
@@ -167,6 +169,212 @@ namespace
 	}
 }
 
+// ── whisper.cpp (CUDA / CPU) path ──────────────────────────────────────────
+namespace
+{
+	std::string wdTimestamp( int64_t t, bool comma = false )
+	{
+		// whisper.cpp times are in centiseconds (10 ms units)
+		int64_t ms = t * 10;
+		int h  = (int)( ms / 3600000 ); ms %= 3600000;
+		int m  = (int)( ms / 60000 );   ms %= 60000;
+		int s  = (int)( ms / 1000 );    ms %= 1000;
+		char buf[ 32 ];
+		snprintf( buf, sizeof( buf ), "%02d:%02d:%02d%c%03d", h, m, s, comma ? ',' : '.', (int)ms );
+		return buf;
+	}
+
+	struct WdCallbackData
+	{
+		const whisper_params* params;
+		std::atomic_bool* abortFlag;
+	};
+
+	void __cdecl wdProgressCb( int progress, void* userData )
+	{
+		fprintf( stderr, "\r[whisper.cpp] %3d%%", progress );
+		if( progress >= 100 )
+			fprintf( stderr, "\n" );
+	}
+
+	void __cdecl wdSegmentCb( int64_t begin, int64_t end, const char* text, void* userData )
+	{
+		auto* data = static_cast<WdCallbackData*>( userData );
+		if( data->params->no_timestamps )
+			printf( "%s", text );
+		else
+			printf( "[%s --> %s]  %s\n",
+				wdTimestamp( begin ).c_str(),
+				wdTimestamp( end ).c_str(),
+				text );
+		fflush( stdout );
+	}
+
+	int __cdecl wdCancelCb( void* userData )
+	{
+		auto* data = static_cast<WdCallbackData*>( userData );
+		return data->abortFlag->load() ? 1 : 0;
+	}
+
+	// Write segments to a file in the given format
+	bool wdWriteFile( WdBackend& backend, WdBackend::Model* model,
+		const wchar_t* audioPath, const wchar_t* ext,
+		std::function<void( FILE*, int count, WdBackend&, WdBackend::Model* )> formatter )
+	{
+		// Build output path: replace extension
+		std::wstring outPath = audioPath;
+		size_t dot = outPath.rfind( L'.' );
+		if( dot != std::wstring::npos )
+			outPath = outPath.substr( 0, dot );
+		outPath += ext;
+
+		FILE* f = nullptr;
+		_wfopen_s( &f, outPath.c_str(), L"wb" );
+		if( !f )
+		{
+			fwprintf( stderr, L"Unable to create output file: %s\n", outPath.c_str() );
+			return false;
+		}
+		// UTF-8 BOM
+		fwrite( "\xEF\xBB\xBF", 1, 3, f );
+		int count = backend.segmentCount( model );
+		formatter( f, count, backend, model );
+		fclose( f );
+		return true;
+	}
+
+	void wdWriteTxt( FILE* f, int count, WdBackend& b, WdBackend::Model* m, bool timestamps )
+	{
+		for( int i = 0; i < count; i++ )
+		{
+			if( timestamps )
+				fprintf( f, "[%s --> %s]  ",
+					wdTimestamp( b.segmentBegin( m, i ) ).c_str(),
+					wdTimestamp( b.segmentEnd( m, i ) ).c_str() );
+			const char* text = b.segmentText( m, i );
+			while( *text == ' ' ) text++;
+			fprintf( f, "%s\r\n", text );
+		}
+	}
+
+	void wdWriteSrt( FILE* f, int count, WdBackend& b, WdBackend::Model* m )
+	{
+		for( int i = 0; i < count; i++ )
+		{
+			const char* text = b.segmentText( m, i );
+			while( *text == ' ' ) text++;
+			fprintf( f, "%d\r\n%s --> %s\r\n%s\r\n\r\n",
+				i + 1,
+				wdTimestamp( b.segmentBegin( m, i ), true ).c_str(),
+				wdTimestamp( b.segmentEnd( m, i ), true ).c_str(),
+				text );
+		}
+	}
+
+	void wdWriteVtt( FILE* f, int count, WdBackend& b, WdBackend::Model* m )
+	{
+		fprintf( f, "WEBVTT\r\n\r\n" );
+		for( int i = 0; i < count; i++ )
+		{
+			const char* text = b.segmentText( m, i );
+			while( *text == ' ' ) text++;
+			fprintf( f, "%s --> %s\r\n%s\r\n\r\n",
+				wdTimestamp( b.segmentBegin( m, i ) ).c_str(),
+				wdTimestamp( b.segmentEnd( m, i ) ).c_str(),
+				text );
+		}
+	}
+}
+
+static int runWhisperCpp( const whisper_params& params )
+{
+	// Pick the right DLL
+	const wchar_t* dllName = params.engine == "cuda"
+		? L"WhisperCppBackendCuda.dll" : L"WhisperCppBackendCpu.dll";
+
+	WdBackend backend( dllName );
+	if( !backend.loaded() )
+	{
+		fprintf( stderr, "error: %s\n", backend.loadError().c_str() );
+		return 4;
+	}
+
+	WdBackend::Model* model = backend.loadModel( params.model.c_str() );
+	if( !model || !backend.modelReady( model ) )
+	{
+		fprintf( stderr, "error: failed to load model: %s\n",
+			model ? backend.lastError( model ) : "null handle" );
+		if( model ) backend.freeModel( model );
+		return 4;
+	}
+
+	// We still use Whisper.dll's Media Foundation for audio decoding
+	ComLight::CComPtr<Whisper::iMediaFoundation> mf;
+	HRESULT hr = Whisper::initMediaFoundation( &mf );
+	if( FAILED( hr ) )
+	{
+		fprintf( stderr, "error: failed to initialize Media Foundation (HRESULT 0x%08X)\n", (unsigned)hr );
+		backend.freeModel( model );
+		return 7;
+	}
+
+	for( const std::wstring& fname : params.fname_inp )
+	{
+		fwprintf( stderr, L"\n[whisper.cpp] Processing: %s\n", fname.c_str() );
+
+		// Decode audio to PCM mono float
+		ComLight::CComPtr<Whisper::iAudioBuffer> buffer;
+		hr = mf->loadAudioFile( fname.c_str(), params.diarize, &buffer );
+		if( FAILED( hr ) )
+		{
+			fprintf( stderr, "error: unable to load audio file (HRESULT 0x%08X)\n", (unsigned)hr );
+			continue;
+		}
+
+		const float* pcm = buffer->getPcmMono();
+		const int sampleCount = (int)buffer->countSamples();
+
+		std::atomic_bool abortFlag{ false };
+		WdCallbackData cbData{ &params, &abortFlag };
+
+		int result = backend.transcribe(
+			model, pcm, sampleCount,
+			params.language.c_str(),
+			params.translate ? 1 : 0,
+			&wdProgressCb,
+			&wdSegmentCb,
+			&wdCancelCb,
+			&cbData );
+
+		if( result != 0 )
+		{
+			fprintf( stderr, "error: transcription failed: %s\n", backend.lastError( model ) );
+			continue;
+		}
+
+		// Write output files
+		if( params.output_txt )
+		{
+			bool ts = !params.no_timestamps;
+			wdWriteFile( backend, model, fname.c_str(), L".txt",
+				[ts]( FILE* f, int c, WdBackend& b, WdBackend::Model* m ) { wdWriteTxt( f, c, b, m, ts ); } );
+		}
+		if( params.output_srt )
+		{
+			wdWriteFile( backend, model, fname.c_str(), L".srt",
+				[]( FILE* f, int c, WdBackend& b, WdBackend::Model* m ) { wdWriteSrt( f, c, b, m ); } );
+		}
+		if( params.output_vtt )
+		{
+			wdWriteFile( backend, model, fname.c_str(), L".vtt",
+				[]( FILE* f, int c, WdBackend& b, WdBackend::Model* m ) { wdWriteVtt( f, c, b, m ); } );
+		}
+	}
+
+	backend.freeModel( model );
+	return 0;
+}
+
 static void __stdcall setPrompt( const int* ptr, int length, void* pv )
 {
 	std::vector<int>& vec = *( std::vector<int> * )( pv );
@@ -191,6 +399,11 @@ int wmain( int argc, wchar_t* argv[] )
 	if( !params.parse( argc, argv ) )
 		return 1;
 
+	// Route to whisper.cpp backend for cuda/cpu engines
+	if( params.engine == "cuda" || params.engine == "cpu" )
+		return runWhisperCpp( params );
+
+	// ── D3D11 legacy path (unchanged) ──
 	if( params.print_colors )
 	{
 		if( FAILED( setupConsoleColors() ) )
