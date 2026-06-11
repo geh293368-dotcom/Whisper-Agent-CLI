@@ -57,7 +57,7 @@ public sealed class WhisperCppTranscriptionEngine : ITranscriptionEngine
         bool translate,
         OutputFormat format,
         IProgress<double>? progress,
-        Action<string>? liveText,
+        Action<TranscriptionSegment>? liveSegment,
         CancellationToken cancellationToken)
     {
         if (model is null || mediaFoundation is null)
@@ -71,11 +71,16 @@ public sealed class WhisperCppTranscriptionEngine : ITranscriptionEngine
 
             WhisperCppNative.ProgressCallback progressCallback =
                 (value, _) => progress?.Report(value / 100.0);
-            WhisperCppNative.SegmentCallback segmentCallback = (_, _, text, _) =>
+            WhisperCppNative.SegmentCallback segmentCallback = (begin, end, text, _) =>
             {
                 string? value = Marshal.PtrToStringUTF8(text);
                 if (!string.IsNullOrWhiteSpace(value))
-                    liveText?.Invoke(value.Trim());
+                {
+                    liveSegment?.Invoke(new TranscriptionSegment(
+                        TimeSpan.FromMilliseconds(begin * 10),
+                        TimeSpan.FromMilliseconds(end * 10),
+                        value.Trim()));
+                }
             };
             WhisperCppNative.CancelCallback cancelCallback =
                 _ => cancellationToken.IsCancellationRequested ? 1 : 0;

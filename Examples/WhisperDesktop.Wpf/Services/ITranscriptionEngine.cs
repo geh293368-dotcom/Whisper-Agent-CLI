@@ -2,6 +2,8 @@ using Whisper;
 
 namespace WhisperDesktop.Modern.Services;
 
+public readonly record struct TranscriptionSegment(TimeSpan Begin, TimeSpan End, string Text);
+
 public interface ITranscriptionEngine : IDisposable
 {
     bool IsModelLoaded { get; }
@@ -18,6 +20,6 @@ public interface ITranscriptionEngine : IDisposable
         bool translate,
         OutputFormat format,
         IProgress<double>? progress,
-        Action<string>? liveText,
+        Action<TranscriptionSegment>? liveSegment,
         CancellationToken cancellationToken);
 }

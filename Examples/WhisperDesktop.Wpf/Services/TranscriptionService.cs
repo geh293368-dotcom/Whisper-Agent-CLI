@@ -39,7 +39,7 @@ public sealed class TranscriptionService : ITranscriptionEngine
         bool translate,
         OutputFormat format,
         IProgress<double>? progress,
-        Action<string>? liveText,
+        Action<TranscriptionSegment>? liveSegment,
         CancellationToken cancellationToken)
     {
         if (model is null || mediaFoundation is null)
@@ -54,7 +54,7 @@ public sealed class TranscriptionService : ITranscriptionEngine
             context.parameters.setFlag(eFullParamsFlags.NoContext, true);
             context.parameters.setFlag(eFullParamsFlags.PrintRealtime, false);
 
-            var callbacks = new UiCallbacks(cancellationToken, liveText);
+            var callbacks = new UiCallbacks(cancellationToken, liveSegment);
             using iAudioReader reader = mediaFoundation.openAudioFile(inputPath);
             context.runFull(reader, pfnProgress: value => progress?.Report(value), callbacks: callbacks);
             cancellationToken.ThrowIfCancellationRequested();
@@ -80,7 +80,7 @@ public sealed class TranscriptionService : ITranscriptionEngine
         mediaFoundation = null;
     }
 
-    sealed class UiCallbacks(CancellationToken cancellationToken, Action<string>? liveText) : Callbacks
+    sealed class UiCallbacks(CancellationToken cancellationToken, Action<TranscriptionSegment>? liveSegment) : Callbacks
     {
         protected override bool onEncoderBegin(Context sender) => !cancellationToken.IsCancellationRequested;
 
@@ -90,9 +90,10 @@ public sealed class TranscriptionService : ITranscriptionEngine
             int first = Math.Max(0, segments.Length - countNew);
             for (int i = first; i < segments.Length; i++)
             {
-                string? text = segments[i].text;
+                sSegment segment = segments[i];
+                string? text = segment.text;
                 if (!string.IsNullOrWhiteSpace(text))
-                    liveText?.Invoke(text.Trim());
+                    liveSegment?.Invoke(new TranscriptionSegment(segment.time.begin, segment.time.end, text.Trim()));
             }
         }
     }

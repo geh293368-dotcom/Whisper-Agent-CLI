@@ -13,23 +13,41 @@ namespace WhisperDesktop.Modern;
 public sealed record LanguageOption(string Name, eLanguage Value);
 public sealed record OutputFormatOption(string Name, OutputFormat Value);
 public sealed record EngineOption(string Name, Func<ITranscriptionEngine> Create);
+public sealed record OutputLocationOption(string Name, OutputLocationMode Value, string Description);
+
+public enum OutputLocationMode
+{
+    SelectedFolder,
+    SourceFolder,
+    PreserveStructure,
+}
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
+    static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".wav", ".wave", ".mp3", ".wma", ".mp4", ".mpeg4", ".mkv", ".m4a", ".aac", ".flac",
+    };
+
     ITranscriptionEngine transcription;
+    iMediaFoundation? captureMediaFoundation;
     CancellationTokenSource? operationCancellation;
     string modelPath = string.Empty;
     string outputFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     string modelStatus = "尚未加载模型";
     string globalStatus = "准备就绪";
-    string liveOutput = string.Empty;
+    string logOutput = string.Empty;
+    string liveStatus = "请选择麦克风并刷新设备列表";
     double modelProgress;
     bool isRunning;
     bool isLoadingModel;
     bool translate;
+    bool syncingSourceSelection;
     LanguageOption selectedLanguage;
     OutputFormatOption selectedOutputFormat;
     EngineOption selectedEngine;
+    OutputLocationOption selectedOutputLocation;
+    CaptureDeviceOption? selectedCaptureDevice;
 
     public MainWindow()
     {
@@ -58,20 +76,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             new("纯文本 (.txt)", OutputFormat.Text),
             new("带时间戳文本 (.txt)", OutputFormat.TextWithTimestamps),
         ];
+        OutputLocations =
+        [
+            new("统一输出目录", OutputLocationMode.SelectedFolder, "全部字幕写入指定目录"),
+            new("原文件旁", OutputLocationMode.SourceFolder, "字幕写入媒体文件所在目录"),
+            new("保留目录结构", OutputLocationMode.PreserveStructure, "在输出目录中保留导入文件夹的层级"),
+        ];
+
         selectedLanguage = Languages[0];
         selectedOutputFormat = OutputFormats[0];
         selectedEngine = Engines[0];
+        selectedOutputLocation = OutputLocations[0];
         transcription = selectedEngine.Create();
 
         InitializeComponent();
         DataContext = this;
         Library.setLogSink(eLogLevel.Info, eLoggerFlags.SkipFormatMessage, OnNativeLog);
+        RefreshCaptureDevices();
     }
 
     public ObservableCollection<TranscriptionJob> Jobs { get; } = [];
+    public ObservableCollection<SourceFolderItem> SourceFolders { get; } = [];
+    public ObservableCollection<SubtitlePreviewItem> PreviewSegments { get; } = [];
+    public ObservableCollection<CaptureDeviceOption> CaptureDevices { get; } = [];
     public IReadOnlyList<LanguageOption> Languages { get; }
     public IReadOnlyList<OutputFormatOption> OutputFormats { get; }
     public IReadOnlyList<EngineOption> Engines { get; }
+    public IReadOnlyList<OutputLocationOption> OutputLocations { get; }
 
     public string ModelPath
     {
@@ -97,10 +128,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set { globalStatus = value; OnPropertyChanged(); }
     }
 
-    public string LiveOutput
+    public string LogOutput
     {
-        get => liveOutput;
-        set { liveOutput = value; OnPropertyChanged(); }
+        get => logOutput;
+        set { logOutput = value; OnPropertyChanged(); }
+    }
+
+    public string LiveStatus
+    {
+        get => liveStatus;
+        set { liveStatus = value; OnPropertyChanged(); }
     }
 
     public double ModelProgress
@@ -112,19 +149,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public bool Translate
     {
         get => translate;
-        set { translate = value; OnPropertyChanged(); }
+        set { translate = value && CanTranslate; OnPropertyChanged(); }
     }
+
+    public bool CanTranslate => SelectedLanguage.Value != eLanguage.English;
 
     public LanguageOption SelectedLanguage
     {
         get => selectedLanguage;
-        set { selectedLanguage = value; OnPropertyChanged(); }
+        set
+        {
+            selectedLanguage = value;
+            if (!CanTranslate)
+                translate = false;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(Translate));
+            OnPropertyChanged(nameof(CanTranslate));
+        }
     }
 
     public OutputFormatOption SelectedOutputFormat
     {
         get => selectedOutputFormat;
         set { selectedOutputFormat = value; OnPropertyChanged(); }
+    }
+
+    public OutputLocationOption SelectedOutputLocation
+    {
+        get => selectedOutputLocation;
+        set { selectedOutputLocation = value; OnPropertyChanged(); }
     }
 
     public EngineOption SelectedEngine
@@ -146,15 +199,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    public CaptureDeviceOption? SelectedCaptureDevice
+    {
+        get => selectedCaptureDevice;
+        set { selectedCaptureDevice = value; OnPropertyChanged(); }
+    }
+
     public bool IsRunning
     {
         get => isRunning;
         private set { isRunning = value; OnPropertyChanged(); OnStateChanged(); }
     }
 
+    public int SelectedJobCount => Jobs.Count(job => job.IsSelected);
+    public string QueueSummary => $"{Jobs.Count} 个文件，已选择 {SelectedJobCount} 个";
     public bool CanEditQueue => !IsRunning && !isLoadingModel;
     public bool CanLoadModel => !IsRunning && !isLoadingModel && File.Exists(ModelPath);
-    public bool CanStart => transcription.IsModelLoaded && Jobs.Count > 0 && !IsRunning && !isLoadingModel;
+    public bool CanStart => transcription.IsModelLoaded && SelectedJobCount > 0 && !IsRunning && !isLoadingModel;
 
     void ChooseModel_Click(object sender, RoutedEventArgs e)
     {
@@ -216,29 +277,126 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (dialog.ShowDialog(this) != true)
             return;
 
-        var existing = Jobs.Select(job => job.InputPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (string path in dialog.FileNames)
+            AddJob(path, Path.GetDirectoryName(path));
+        QueueChanged();
+    }
+
+    void AddFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFolderDialog { Title = "选择要递归扫描的媒体目录", Multiselect = false };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        string root = dialog.FolderName;
+        int before = Jobs.Count;
+        try
         {
-            if (existing.Add(path))
-                Jobs.Add(new TranscriptionJob { InputPath = path });
+            foreach (string path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                                             .Where(path => SupportedExtensions.Contains(Path.GetExtension(path))))
+                AddJob(path, root);
         }
-        GlobalStatus = $"队列中共有 {Jobs.Count} 个文件";
-        OnStateChanged();
+        catch (UnauthorizedAccessException ex)
+        {
+            AppendLog("扫描", $"部分目录无法访问：{ex.Message}");
+        }
+
+        QueueChanged();
+        GlobalStatus = $"从 {root} 添加了 {Jobs.Count - before} 个媒体文件";
+    }
+
+    void AddJob(string path, string? sourceRoot)
+    {
+        if (Jobs.Any(job => string.Equals(job.InputPath, path, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        var job = new TranscriptionJob { InputPath = path, SourceRoot = sourceRoot };
+        job.PropertyChanged += Job_PropertyChanged;
+        Jobs.Add(job);
+
+        if (string.IsNullOrWhiteSpace(sourceRoot))
+            return;
+        SourceFolderItem? source = SourceFolders.FirstOrDefault(item => string.Equals(item.Path, sourceRoot, StringComparison.OrdinalIgnoreCase));
+        if (source is null)
+        {
+            source = new SourceFolderItem { Path = sourceRoot, FileCount = 1 };
+            source.PropertyChanged += Source_PropertyChanged;
+            SourceFolders.Add(source);
+        }
+        else
+        {
+            source.FileCount++;
+        }
+    }
+
+    void Source_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (syncingSourceSelection || e.PropertyName != nameof(SourceFolderItem.IsSelected) || sender is not SourceFolderItem source)
+            return;
+
+        syncingSourceSelection = true;
+        foreach (TranscriptionJob job in Jobs.Where(job => string.Equals(job.SourceRoot, source.Path, StringComparison.OrdinalIgnoreCase)))
+            job.IsSelected = source.IsSelected;
+        syncingSourceSelection = false;
+        QueueChanged();
+    }
+
+    void Job_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(TranscriptionJob.IsSelected))
+            QueueChanged();
+    }
+
+    void SelectAll_Click(object sender, RoutedEventArgs e) => SetAllSelected(true);
+    void SelectNone_Click(object sender, RoutedEventArgs e) => SetAllSelected(false);
+
+    void SetAllSelected(bool selected)
+    {
+        syncingSourceSelection = true;
+        foreach (TranscriptionJob job in Jobs)
+            job.IsSelected = selected;
+        foreach (SourceFolderItem source in SourceFolders)
+            source.IsSelected = selected;
+        syncingSourceSelection = false;
+        QueueChanged();
     }
 
     void RemoveFiles_Click(object sender, RoutedEventArgs e)
     {
-        foreach (TranscriptionJob job in JobList.SelectedItems.Cast<TranscriptionJob>().ToArray())
+        foreach (TranscriptionJob job in JobGrid.SelectedItems.Cast<TranscriptionJob>().ToArray())
+        {
+            job.PropertyChanged -= Job_PropertyChanged;
             Jobs.Remove(job);
-        OnStateChanged();
+        }
+        RebuildSources();
+        QueueChanged();
     }
 
     void ClearFiles_Click(object sender, RoutedEventArgs e)
     {
+        foreach (TranscriptionJob job in Jobs)
+            job.PropertyChanged -= Job_PropertyChanged;
+        foreach (SourceFolderItem source in SourceFolders)
+            source.PropertyChanged -= Source_PropertyChanged;
         Jobs.Clear();
-        LiveOutput = string.Empty;
+        SourceFolders.Clear();
+        PreviewSegments.Clear();
         GlobalStatus = "队列已清空";
-        OnStateChanged();
+        QueueChanged();
+    }
+
+    void RebuildSources()
+    {
+        foreach (SourceFolderItem source in SourceFolders)
+            source.PropertyChanged -= Source_PropertyChanged;
+        SourceFolders.Clear();
+        foreach (IGrouping<string, TranscriptionJob> group in Jobs.Where(job => !string.IsNullOrWhiteSpace(job.SourceRoot))
+            .GroupBy(job => job.SourceRoot!, StringComparer.OrdinalIgnoreCase))
+        {
+            var source = new SourceFolderItem { Path = group.Key, FileCount = group.Count(), IsSelected = group.Any(job => job.IsSelected) };
+            source.PropertyChanged += Source_PropertyChanged;
+            SourceFolders.Add(source);
+        }
     }
 
     void ChooseOutputFolder_Click(object sender, RoutedEventArgs e)
@@ -254,7 +412,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     async void Start_Click(object sender, RoutedEventArgs e)
     {
-        if (!Directory.Exists(OutputFolder))
+        if (SelectedOutputLocation.Value != OutputLocationMode.SourceFolder && !Directory.Exists(OutputFolder))
         {
             MessageBox.Show(this, "请选择有效的输出目录。", "无法开始", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
@@ -263,13 +421,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         operationCancellation?.Dispose();
         operationCancellation = new CancellationTokenSource();
         IsRunning = true;
-        LiveOutput = string.Empty;
+        PreviewSegments.Clear();
         int completed = 0;
         int failed = 0;
 
         try
         {
-            foreach (TranscriptionJob job in Jobs)
+            foreach (TranscriptionJob job in Jobs.Where(job => job.IsSelected).ToArray())
             {
                 operationCancellation.Token.ThrowIfCancellationRequested();
                 job.State = JobState.Running;
@@ -277,23 +435,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 job.Progress = 0;
                 job.Error = null;
                 GlobalStatus = $"正在处理 {job.FileName}";
+                int segmentIndex = 0;
 
                 var progress = new Progress<double>(value => job.Progress = value);
                 try
                 {
+                    string targetFolder = GetOutputFolder(job);
+                    Directory.CreateDirectory(targetFolder);
                     job.OutputPath = await transcription.TranscribeAsync(
                         job.InputPath,
-                        OutputFolder,
+                        targetFolder,
                         SelectedLanguage.Value,
                         Translate,
                         SelectedOutputFormat.Value,
                         progress,
-                        text => Dispatcher.BeginInvoke(() => AppendLiveText(job.FileName, text)),
+                        segment => Dispatcher.BeginInvoke(() => PreviewSegments.Add(new SubtitlePreviewItem(
+                            ++segmentIndex, job.FileName, segment.Begin, segment.End, segment.Text))),
                         operationCancellation.Token);
                     job.Progress = 1;
                     job.State = JobState.Completed;
                     job.StatusText = "完成";
                     completed++;
+                    AppendLog(job.FileName, $"已输出到 {job.OutputPath}");
                 }
                 catch (OperationCanceledException)
                 {
@@ -307,15 +470,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     job.StatusText = "失败";
                     job.Error = ex.Message;
                     failed++;
-                    AppendLiveText(job.FileName, $"错误: {ex.Message}");
+                    AppendLog(job.FileName, $"错误：{ex.Message}");
                 }
             }
             GlobalStatus = $"批量转录完成：成功 {completed}，失败 {failed}";
         }
         catch (OperationCanceledException)
         {
-            foreach (TranscriptionJob pending in Jobs.Where(j => j.State == JobState.Pending))
-                pending.StatusText = "未处理";
             GlobalStatus = $"任务已停止：成功 {completed}，失败 {failed}";
         }
         finally
@@ -324,42 +485,83 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    string GetOutputFolder(TranscriptionJob job)
+    {
+        return SelectedOutputLocation.Value switch
+        {
+            OutputLocationMode.SourceFolder => Path.GetDirectoryName(job.InputPath) ?? OutputFolder,
+            OutputLocationMode.PreserveStructure when !string.IsNullOrWhiteSpace(job.SourceRoot) =>
+                Path.Combine(OutputFolder, Path.GetFileName(job.SourceRoot.TrimEnd(Path.DirectorySeparatorChar)),
+                    Path.GetDirectoryName(job.RelativePath) ?? string.Empty),
+            _ => OutputFolder,
+        };
+    }
+
     void Stop_Click(object sender, RoutedEventArgs e)
     {
         GlobalStatus = "正在停止当前任务...";
         operationCancellation?.Cancel();
     }
 
-    void AppendLiveText(string fileName, string text)
+    void RefreshDevices_Click(object sender, RoutedEventArgs e) => RefreshCaptureDevices();
+
+    void RefreshCaptureDevices()
     {
-        LiveOutput += $"[{fileName}] {text}{Environment.NewLine}";
+        try
+        {
+            captureMediaFoundation ??= Library.initMediaFoundation();
+            CaptureDeviceId[] devices = captureMediaFoundation.listCaptureDevices() ?? [];
+            CaptureDevices.Clear();
+            foreach (CaptureDeviceId device in devices)
+                CaptureDevices.Add(new CaptureDeviceOption(device.displayName, device.endpoint));
+            SelectedCaptureDevice = CaptureDevices.FirstOrDefault();
+            LiveStatus = devices.Length == 0 ? "未发现可用麦克风" : $"已发现 {devices.Length} 个录音设备";
+        }
+        catch (Exception ex)
+        {
+            LiveStatus = $"无法读取录音设备：{ex.Message}";
+        }
+    }
+
+    void AppendLog(string source, string text)
+    {
+        LogOutput += $"[{DateTime.Now:HH:mm:ss}] [{source}] {text.Trim()}{Environment.NewLine}";
     }
 
     void OnNativeLog(eLogLevel level, string message)
     {
-        Dispatcher.BeginInvoke(() => AppendLiveText(level.ToString(), message.Trim()));
+        Dispatcher.BeginInvoke(() => AppendLog(level.ToString(), message));
     }
 
     void OnWindowClosing(object? sender, CancelEventArgs e)
     {
-        if (!IsRunning && !isLoadingModel)
+        if (IsRunning || isLoadingModel)
         {
-            transcription.Dispose();
-            return;
+            MessageBoxResult result = MessageBox.Show(
+                this,
+                "模型或转录任务仍在运行，确定要退出吗？",
+                "确认退出",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (result == MessageBoxResult.No)
+            {
+                e.Cancel = true;
+                return;
+            }
+            operationCancellation?.Cancel();
         }
 
-        MessageBoxResult result = MessageBox.Show(
-            this,
-            "模型或转录任务仍在运行，确定要退出吗？",
-            "确认退出",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (result == MessageBoxResult.No)
-        {
-            e.Cancel = true;
-            return;
-        }
-        operationCancellation?.Cancel();
+        transcription.Dispose();
+        captureMediaFoundation?.Dispose();
+    }
+
+    void QueueChanged()
+    {
+        OnPropertyChanged(nameof(SelectedJobCount));
+        OnPropertyChanged(nameof(QueueSummary));
+        OnStateChanged();
+        if (!IsRunning)
+            GlobalStatus = QueueSummary;
     }
 
     void OnStateChanged()
