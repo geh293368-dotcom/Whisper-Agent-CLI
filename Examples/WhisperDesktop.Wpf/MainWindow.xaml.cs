@@ -12,10 +12,11 @@ namespace WhisperDesktop.Modern;
 
 public sealed record LanguageOption(string Name, eLanguage Value);
 public sealed record OutputFormatOption(string Name, OutputFormat Value);
+public sealed record EngineOption(string Name, Func<ITranscriptionEngine> Create);
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
-    readonly TranscriptionService transcription = new();
+    ITranscriptionEngine transcription;
     CancellationTokenSource? operationCancellation;
     string modelPath = string.Empty;
     string outputFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
@@ -28,9 +29,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     bool translate;
     LanguageOption selectedLanguage;
     OutputFormatOption selectedOutputFormat;
+    EngineOption selectedEngine;
 
     public MainWindow()
     {
+        Engines =
+        [
+            new("whisper.cpp 1.8.6（CUDA / NVIDIA，推荐）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCuda.dll")),
+            new("whisper.cpp 1.8.6（CPU，兼容）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCpu.dll")),
+            new("WhisperDesktop D3D11（兼容版）", () => new TranscriptionService()),
+        ];
         Languages =
         [
             new("中文", eLanguage.Chinese),
@@ -52,6 +60,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ];
         selectedLanguage = Languages[0];
         selectedOutputFormat = OutputFormats[0];
+        selectedEngine = Engines[0];
+        transcription = selectedEngine.Create();
 
         InitializeComponent();
         DataContext = this;
@@ -61,6 +71,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ObservableCollection<TranscriptionJob> Jobs { get; } = [];
     public IReadOnlyList<LanguageOption> Languages { get; }
     public IReadOnlyList<OutputFormatOption> OutputFormats { get; }
+    public IReadOnlyList<EngineOption> Engines { get; }
 
     public string ModelPath
     {
@@ -114,6 +125,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         get => selectedOutputFormat;
         set { selectedOutputFormat = value; OnPropertyChanged(); }
+    }
+
+    public EngineOption SelectedEngine
+    {
+        get => selectedEngine;
+        set
+        {
+            if (value is null || ReferenceEquals(selectedEngine, value) || IsRunning || isLoadingModel)
+                return;
+
+            transcription.Dispose();
+            selectedEngine = value;
+            transcription = value.Create();
+            ModelStatus = "尚未加载模型";
+            ModelProgress = 0;
+            GlobalStatus = $"已切换到 {value.Name}";
+            OnPropertyChanged();
+            OnStateChanged();
+        }
     }
 
     public bool IsRunning

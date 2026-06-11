@@ -1,5 +1,3 @@
-using System.Text;
-using System.IO;
 using Whisper;
 
 namespace WhisperDesktop.Modern.Services;
@@ -12,7 +10,7 @@ public enum OutputFormat
     WebVtt,
 }
 
-public sealed class TranscriptionService : IDisposable
+public sealed class TranscriptionService : ITranscriptionEngine
 {
     iModel? model;
     iMediaFoundation? mediaFoundation;
@@ -70,26 +68,7 @@ public sealed class TranscriptionService : IDisposable
                     segment.text ?? string.Empty));
             }
 
-            IReadOnlyList<SubtitleCue> cues = SubtitlePipeline.Build(copied);
-            string content = format switch
-            {
-                OutputFormat.Text => SubtitlePipeline.RenderText(cues, false),
-                OutputFormat.TextWithTimestamps => SubtitlePipeline.RenderText(cues, true),
-                OutputFormat.SubRip => SubtitlePipeline.RenderSubRip(cues),
-                OutputFormat.WebVtt => SubtitlePipeline.RenderWebVtt(cues),
-                _ => throw new ArgumentOutOfRangeException(nameof(format)),
-            };
-
-            Directory.CreateDirectory(outputFolder);
-            string extension = format switch
-            {
-                OutputFormat.SubRip => ".srt",
-                OutputFormat.WebVtt => ".vtt",
-                _ => ".txt",
-            };
-            string outputPath = Path.Combine(outputFolder, Path.GetFileNameWithoutExtension(inputPath) + extension);
-            File.WriteAllText(outputPath, content, new UTF8Encoding(true));
-            return outputPath;
+            return TranscriptionOutput.Write(copied, inputPath, outputFolder, format);
         }, cancellationToken);
     }
 

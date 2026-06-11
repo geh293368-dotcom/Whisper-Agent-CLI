@@ -27,3 +27,8 @@ WhisperPS/bin/
 Tools/CompressTables/bin/
 Tools/CompressTables/obj/
 .idea
+Native/WhisperCppBackend/build/
+Native/WhisperCppBackend/build-local/
+Native/WhisperCppBackend/build-cpu/
+Native/WhisperCppBackend/build-cuda/
+.tmp/
