@@ -18,16 +18,25 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3967.48" />
+  </ItemGroup>
   <Target Name="BuildWhisperCppBackend" BeforeTargets="Build">
     <Exec Command="&quot;$(MSBuildProjectDirectory)\..\..\Tools\build-whispercpp.cmd&quot;" />
   </Target>
+  <Target Name="BuildWebFrontend" BeforeTargets="Build">
+    <Exec Command="&quot;$(MSBuildProjectDirectory)\..\..\Tools\build-webui.cmd&quot;" />
+  </Target>
+  <Target Name="CopyWebFrontend" AfterTargets="Build">
+    <ItemGroup>
+      <WebFrontendFiles Include="$(MSBuildProjectDirectory)\..\WhisperDesktop.Web\dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WebFrontendFiles)"
+          DestinationFiles="@(WebFrontendFiles->'$(OutDir)Web\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
   <Target Name="CopyWhisperCppBackend" AfterTargets="Build">
     <Delete Files="$(OutDir)WhisperCppBackend.dll" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cpu\bin\WhisperCppBackendCpu.dll;
-                       $(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cuda\bin\WhisperCppBackendCuda.dll;
-                       $(CUDA_PATH)\bin\x64\cublas64_13.dll;
-                       $(CUDA_PATH)\bin\x64\cublasLt64_13.dll;
-                       $(CUDA_PATH)\bin\x64\cudart64_13.dll"
-          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cpu\bin\WhisperCppBackendCpu.dll;&#xA;                       $(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cuda\bin\WhisperCppBackendCuda.dll;&#xA;                       $(CUDA_PATH)\bin\x64\cublas64_13.dll;&#xA;                       $(CUDA_PATH)\bin\x64\cublasLt64_13.dll;&#xA;                       $(CUDA_PATH)\bin\x64\cudart64_13.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 </Project>

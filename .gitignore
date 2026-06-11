@@ -12,11 +12,21 @@ Examples/TranscribeCS/bin/
 Examples/TranscribeCS/obj/
 *.aps
 *.json
+!Examples/WhisperDesktop.Web/package.json
+!Examples/WhisperDesktop.Web/package-lock.json
+!Examples/WhisperDesktop.Web/tsconfig.json
+!Examples/WhisperDesktop.Web/tsconfig.app.json
+!Examples/WhisperDesktop.Web/tsconfig.node.json
 *.user
 Examples/MicrophoneCS/obj/
 Examples/MicrophoneCS/bin/
 Examples/WhisperDesktop.Wpf/bin/
 Examples/WhisperDesktop.Wpf/obj/
+Examples/WhisperDesktop.Web/node_modules/
+Examples/WhisperDesktop.Web/dist/
+Examples/WhisperDesktop.Web/*.tsbuildinfo
+Examples/WhisperDesktop.Web/vite.config.js
+Examples/WhisperDesktop.Web/vite.config.d.ts
 Tools/ModernUiTests/bin/
 Tools/ModernUiTests/obj/
 Tools/PerfSummary/bin/
@@ -32,3 +42,4 @@ Native/WhisperCppBackend/build-local/
 Native/WhisperCppBackend/build-cpu/
 Native/WhisperCppBackend/build-cuda/
 .tmp/
+chrome_start.log
