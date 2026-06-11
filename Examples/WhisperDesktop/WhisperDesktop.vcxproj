@@ -92,6 +92,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="CircleIndicator.h" />
+	<ClInclude Include="Core\SubtitlePipeline.h" />
+	<ClInclude Include="Core\TranscriptionQueue.h" />
+	<ClInclude Include="Core\TranscriptionService.h" />
     <ClInclude Include="AppState.h" />
     <ClInclude Include="CaptureDlg.h" />
     <ClInclude Include="ModelAdvancedDlg.h" />
@@ -118,6 +121,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CircleIndicator.cpp" />
+	<ClCompile Include="Core\SubtitlePipeline.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+	<ClCompile Include="Core\TranscriptionQueue.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+	<ClCompile Include="Core\TranscriptionService.cpp" />
     <ClCompile Include="AppState.cpp" />
     <ClCompile Include="CaptureDlg.cpp" />
     <ClCompile Include="ModelAdvancedDlg.cpp" />

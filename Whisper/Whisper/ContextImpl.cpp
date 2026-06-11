@@ -793,7 +793,7 @@ HRESULT COMLIGHTCALL ContextImpl::runFullImpl( const sFullParams& params, const 
 			}
 		}
 
-		if( no_text && seek_delta < 100 * WHISPER_CHUNK_SIZE / 2 )
+		if( shouldSkipSilentWindow( !no_text, seek_delta, WHISPER_CHUNK_SIZE ) )
 		{
 			// The model hallucinated a tiny or empty timestamp sequence on silence.
 			// Force it to skip the entire 30-second window to avoid an infinite fallback loop.

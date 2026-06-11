@@ -1,4 +1,5 @@
 #pragma once
+#include "SilenceRecovery.h"
 #include "../API/iContext.cl.h"
 #include "../ComLightLib/comLightServer.h"
 #include "WhisperContext.h"

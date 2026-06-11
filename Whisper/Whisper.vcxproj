@@ -298,6 +298,7 @@
     <ClInclude Include="Utils\GpuProfilerSimple.h" />
     <ClInclude Include="Whisper\Languages.h" />
     <ClInclude Include="Whisper\ContextImpl.h" />
+	<ClInclude Include="Whisper\SilenceRecovery.h" />
     <ClInclude Include="Whisper\ModelImpl.h" />
     <ClInclude Include="Utils\parallelFor.h" />
     <ClInclude Include="Whisper\Spectrogram.h" />

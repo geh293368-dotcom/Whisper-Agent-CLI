@@ -148,14 +148,7 @@ void TranscribeDlg::onAddFiles()
 		return;
 
 	for( const CString& p : paths )
-	{
-		BatchItem item;
-		item.inputPath = p;
-		item.outputPath = L"";
-		item.state = eBatchState::Pending;
-		item.result = S_OK;
-		batchItems.emplace_back( item );
-	}
+		queue.add( p );
 	lastInputPath = paths.front();
 	refreshQueueDisplay();
 	updateQueueButtons();
@@ -169,21 +162,14 @@ void TranscribeDlg::onRemoveFiles()
 	std::vector<int> indices( selected );
 	if( fileList.GetSelItems( selected, indices.data() ) == LB_ERR )
 		return;
-	std::sort( indices.begin(), indices.end(), []( int left, int right ) { return left > right; } );
-	for( int idx : indices )
-	{
-		if( idx < 0 || idx >= (int)batchItems.size() )
-			continue;
-		batchItems.erase( batchItems.begin() + idx );
-	}
+	queue.remove( indices );
 	refreshQueueDisplay();
 	updateQueueButtons();
 }
 
 void TranscribeDlg::onClearFiles()
 {
-	batchItems.clear();
-	runningItem = -1;
+	queue.clear();
 	refreshQueueDisplay();
 	updateQueueButtons();
 }
@@ -194,17 +180,18 @@ LRESULT TranscribeDlg::onQueueSelectionChanged( UINT, INT, HWND, BOOL& )
 	return 0;
 }
 
-CString TranscribeDlg::formatStatus( eBatchState state, HRESULT hr )
+CString TranscribeDlg::formatStatus( TranscriptionQueue::State state, HRESULT hr )
 {
+	using State = TranscriptionQueue::State;
 	switch( state )
 	{
-	case eBatchState::Pending:
+	case State::Pending:
       return L"\u5F85\u529E\u7684";
-	case eBatchState::Running:
+	case State::Running:
       return L"\u6267\u884C\u4E2D";
-	case eBatchState::Completed:
+	case State::Completed:
        return L"\u5B8C\u6210";
-	case eBatchState::Failed:
+	case State::Failed:
 	{
 		CString txt;
        txt.Format( L"\u5931\u8D25 (0x%08X)", hr );
@@ -218,7 +205,7 @@ CString TranscribeDlg::formatStatus( eBatchState state, HRESULT hr )
 void TranscribeDlg::refreshQueueDisplay()
 {
 	fileList.ResetContent();
-	for( const BatchItem& item : batchItems )
+	for( const TranscriptionQueue::Item& item : queue.items() )
 	{
 		CString text = formatStatus( item.state, item.result );
 		text += L" - ";
@@ -230,7 +217,7 @@ void TranscribeDlg::refreshQueueDisplay()
 
 void TranscribeDlg::updateQueueButtons()
 {
-	const BOOL hasItems = batchItems.empty() ? FALSE : TRUE;
+	const BOOL hasItems = queue.empty() ? FALSE : TRUE;
 	const int selection = fileList.GetSelCount();
 	const BOOL canEdit = ( transcribeArgs.visualState == eVisualState::Idle ) ? TRUE : FALSE;
 	CWindow addBtn = GetDlgItem( IDC_ADD_FILES );
@@ -300,12 +287,12 @@ CString TranscribeDlg::composeOutputPath( const CString& input, const CString& e
 
 bool TranscribeDlg::prepareBatchItems( const CString& explicitFolder )
 {
-	if( batchItems.empty() )
+	if( queue.empty() )
 	{
        transcribeError( L"\u8BF7\u81F3\u5C11\u6DFB\u52A0\u4E00\u4E2A\u97F3\u9891\u6587\u4EF6\u3002" );
 		return false;
 	}
-	for( const BatchItem& item : batchItems )
+	for( const TranscriptionQueue::Item& item : queue.items() )
 	{
 		if( PathFileExists( item.inputPath ) )
 			continue;
@@ -316,10 +303,10 @@ bool TranscribeDlg::prepareBatchItems( const CString& explicitFolder )
 	}
 
 	bool needOverwritePrompt = false;
-	for( BatchItem& item : batchItems )
+	queue.reset();
+	for( size_t i = 0; i < queue.size(); i++ )
 	{
-		item.state = eBatchState::Pending;
-		item.result = S_OK;
+		TranscriptionQueue::Item& item = queue[ i ];
 		if( transcribeArgs.format == eOutputFormat::None )
 		{
 			item.outputPath.Empty();
@@ -337,7 +324,6 @@ bool TranscribeDlg::prepareBatchItems( const CString& explicitFolder )
 			return false;
 	}
 
-	runningItem = -1;
 	refreshQueueDisplay();
 	return true;
 }
@@ -346,13 +332,10 @@ bool TranscribeDlg::startNextItem()
 {
 	if( transcribeArgs.visualState != eVisualState::Running )
 		return false;
-	for( size_t i = 0; i < batchItems.size(); i++ )
+	const int next = queue.startNext();
+	if( next >= 0 )
 	{
-		BatchItem& item = batchItems[ i ];
-		if( item.state != eBatchState::Pending )
-			continue;
-		item.state = eBatchState::Running;
-		runningItem = (int)i;
+		TranscriptionQueue::Item& item = queue[ next ];
 		transcribeArgs.pathMedia = item.inputPath;
 		transcribeArgs.pathOutput = item.outputPath;
 		progressBar.SetPos( 0 );
@@ -371,12 +354,10 @@ bool TranscribeDlg::startNextItem()
 
 void TranscribeDlg::finalizeCurrentItem( HRESULT hr )
 {
-	if( runningItem < 0 || runningItem >= (int)batchItems.size() )
+	const int runningItem = queue.runningIndex();
+	if( runningItem < 0 || runningItem >= (int)queue.size() )
 		return;
-	BatchItem& item = batchItems[ runningItem ];
-	item.result = hr;
-	item.state = FAILED( hr ) ? eBatchState::Failed : eBatchState::Completed;
-	runningItem = -1;
+	queue.completeCurrent( hr );
 	refreshQueueDisplay();
 	if( FAILED( hr ) )
 	{
@@ -402,17 +383,18 @@ void TranscribeDlg::finishBatch( bool canceled )
 	size_t completed = 0;
 	size_t failed = 0;
 	size_t pending = 0;
-	for( const BatchItem& item : batchItems )
+	using State = TranscriptionQueue::State;
+	for( const TranscriptionQueue::Item& item : queue.items() )
 	{
 		switch( item.state )
 		{
-		case eBatchState::Completed:
+		case State::Completed:
 			completed++;
 			break;
-		case eBatchState::Failed:
+		case State::Failed:
 			failed++;
 			break;
-		case eBatchState::Pending:
+		case State::Pending:
 			pending++;
 			break;
 		default:
@@ -491,8 +473,8 @@ void TranscribeDlg::onTranscribe()
 	cbTranslate.saveSelection( appState );
 	if( !explicitFolder.IsEmpty() )
 		appState.stringStore( regValOutPath, explicitFolder );
-	if( !batchItems.empty() )
-		appState.stringStore( regValInput, batchItems.front().inputPath );
+	if( !queue.empty() )
+		appState.stringStore( regValInput, queue[ 0 ].inputPath );
 
 	if( !prepareBatchItems( explicitFolder ) )
 		return;
@@ -509,24 +491,6 @@ void __stdcall TranscribeDlg::poolCallback() noexcept
 {
 	HRESULT hr = transcribe();
 	PostMessage( WM_CALLBACK_STATUS, (WPARAM)hr );
-}
-
-static void printTime( CString& rdi, int64_t ticks )
-{
-	const Whisper::sTimeSpan ts{ (uint64_t)ticks };
-	const Whisper::sTimeSpanFields fields = ts;
-
-	if( fields.days != 0 )
-	{
-       rdi.AppendFormat( L"%i \u5929, %i \u5C0F\u65F6", fields.days, (int)fields.hours );
-		return;
-	}
-	if( ( fields.hours | fields.minutes ) != 0 )
-	{
-		rdi.AppendFormat( L"%02d:%02d:%02d", (int)fields.hours, (int)fields.minutes, (int)fields.seconds );
-		return;
-	}
-   rdi.AppendFormat( L"%.3f \u79D2", (double)ticks / 1E7 );
 }
 
 LRESULT TranscribeDlg::onCallbackStatus( UINT, WPARAM wParam, LPARAM, BOOL& )
@@ -556,215 +520,72 @@ void TranscribeDlg::getThreadError()
 
 HRESULT TranscribeDlg::transcribe()
 {
-	transcribeArgs.startTime = GetTickCount64();
 	clearLastError();
 	transcribeArgs.errorMessage = L"";
 
-	using namespace Whisper;
-	CComPtr<iAudioReader> reader;
-
-	CHECK_EX( appState.mediaFoundation->openAudioFile( transcribeArgs.pathMedia, false, &reader ) );
-
 	const eOutputFormat format = transcribeArgs.format;
-	CAtlFile outputFile;
-	if( format != eOutputFormat::None )
-		CHECK( outputFile.Create( transcribeArgs.pathOutput, GENERIC_WRITE, 0, CREATE_ALWAYS ) );
-
-	transcribeArgs.resultFlags = eResultFlags::Timestamps | eResultFlags::Tokens;
-
-	CComPtr<iContext> context;
-	CHECK_EX( appState.model->createContext( &context ) );
-
-	sFullParams fullParams;
-	CHECK_EX( context->fullDefaultParams( eSamplingStrategy::Greedy, &fullParams ) );
-	fullParams.language = transcribeArgs.language;
-	fullParams.setFlag( eFullParamsFlags::Translate, transcribeArgs.translate );
-	fullParams.resetFlag( eFullParamsFlags::PrintRealtime );
-
-	// Setup the callbacks
-	fullParams.new_segment_callback = &newSegmentCallbackStatic;
-	fullParams.new_segment_callback_user_data = this;
-	fullParams.encoder_begin_callback = &encoderBeginCallback;
-	fullParams.encoder_begin_callback_user_data = this;
-
-	// Setup the progress indication sink
-	sProgressSink progressSink{ &progressCallbackStatic, this };
-	// Run the transcribe
-	CHECK_EX( context->runStreamed( fullParams, progressSink, reader ) );
-
-	// Once finished, query duration of the audio.
-	// The duration before the processing is sometimes different, by 20 seconds for the file in that issue:
-	// https://github.com/Const-me/Whisper/issues/4
-	CHECK_EX( reader->getDuration( transcribeArgs.mediaDuration ) );
-
-	context->timingsPrint();
+	TranscriptionService service( appState.mediaFoundation, appState.model );
+	TranscriptionService::Request request{ transcribeArgs.pathMedia, transcribeArgs.language, transcribeArgs.translate };
+	TranscriptionService::Result result;
+	CHECK_EX( service.run( request, *this, result ) );
 
 	if( format == eOutputFormat::None )
 		return S_OK;
 
-	CComPtr<iTranscribeResult> result;
-	CHECK_EX( context->getResults( transcribeArgs.resultFlags, &result ) );
-
-	sTranscribeLength len;
-	CHECK_EX( result->getSize( len ) );
-	const sSegment* const segments = result->getSegments();
+	const std::vector<Subtitle::Cue> cues = Subtitle::build( result.segments );
+	std::string content;
 
 	switch( format )
 	{
 	case eOutputFormat::Text:
-		return writeTextFile( segments, len.countSegments, outputFile, false );
+		content = Subtitle::renderText( cues, false );
+		break;
 	case eOutputFormat::TextTimestamps:
-		return writeTextFile( segments, len.countSegments, outputFile, true );
+		content = Subtitle::renderText( cues, true );
+		break;
 	case eOutputFormat::SubRip:
-		return writeSubRip( segments, len.countSegments, outputFile );
+		content = Subtitle::renderSubRip( cues );
+		break;
 	case eOutputFormat::WebVTT:
-		return writeWebVTT( segments, len.countSegments, outputFile );
+		content = Subtitle::renderWebVtt( cues );
+		break;
 	default:
 		return E_FAIL;
 	}
+
+	CAtlFile outputFile;
+	CHECK_EX( outputFile.Create( transcribeArgs.pathOutput, GENERIC_WRITE, 0, CREATE_ALWAYS ) );
+	CHECK_EX( writeUtf8Bom( outputFile ) );
+	if( !content.empty() )
+		CHECK_EX( outputFile.Write( content.data(), (DWORD)content.size() ) );
+	return S_OK;
 }
 
 #undef CHECK_EX
 
-inline HRESULT TranscribeDlg::progressCallback( double p ) noexcept
+HRESULT TranscribeDlg::onProgress( double value ) noexcept
 {
 	constexpr double mul = progressMaxInteger;
-	int pos = lround( mul * p );
+	int pos = lround( mul * value );
 	progressBar.PostMessage( PBM_SETPOS, pos, 0 );
 	return S_OK;
 }
 
-HRESULT __cdecl TranscribeDlg::progressCallbackStatic( double p, Whisper::iContext* ctx, void* pv ) noexcept
+HRESULT TranscribeDlg::onNewSegments( Whisper::iTranscribeResult* result, uint32_t count ) noexcept
 {
-	TranscribeDlg* dlg = (TranscribeDlg*)pv;
-	return dlg->progressCallback( p );
+	return logNewSegments( result, count );
 }
 
-namespace
+bool TranscribeDlg::shouldContinue() const noexcept
 {
-	HRESULT write( CAtlFile& file, const CStringA& line )
+	switch( transcribeArgs.visualState )
 	{
-		if( line.GetLength() > 0 )
-			CHECK( file.Write( cstr( line ), (DWORD)line.GetLength() ) );
-		return S_OK;
-	}
-
-	const char* skipBlank( const char* rsi )
-	{
-		while( true )
-		{
-			const char c = *rsi;
-			if( c == ' ' || c == '\t' )
-			{
-				rsi++;
-				continue;
-			}
-			return rsi;
-		}
-	}
-}
-
-using Whisper::sSegment;
-
-
-HRESULT TranscribeDlg::writeTextFile( const sSegment* const segments, const size_t length, CAtlFile& file, bool timestamps )
-{
-	using namespace Whisper;
-	CHECK( writeUtf8Bom( file ) );
-	CStringA line;
-	for( size_t i = 0; i < length; i++ )
-	{
-		const sSegment& seg = segments[ i ];
-
-		if( timestamps )
-		{
-			line = "[";
-			printTime( line, seg.time.begin );
-			line += " --> ";
-			printTime( line, seg.time.end );
-			line += "]  ";
-		}
-		else
-			line = "";
-
-		line += skipBlank( seg.text );
-		line += "\r\n";
-		CHECK( write( file, line ) );
-	}
-	return S_OK;
-}
-
-HRESULT TranscribeDlg::writeSubRip( const sSegment* const segments, const size_t length, CAtlFile& file )
-{
-	CHECK( writeUtf8Bom( file ) );
-	CStringA line;
-	for( size_t i = 0; i < length; i++ )
-	{
-		const sSegment& seg = segments[ i ];
-
-		line.Format( "%zu\r\n", i + 1 );
-		printTime( line, seg.time.begin, true );
-		line += " --> ";
-		printTime( line, seg.time.end, true );
-		line += "\r\n";
-		line += skipBlank( seg.text );
-		line += "\r\n\r\n";
-		CHECK( write( file, line ) );
-	}
-	return S_OK;
-}
-
-HRESULT TranscribeDlg::writeWebVTT( const sSegment* const segments, const size_t length, CAtlFile& file )
-{
-	CHECK( writeUtf8Bom( file ) );
-	CStringA line;
-	line = "WEBVTT\r\n\r\n";
-	CHECK( write( file, line ) );
-
-	for( size_t i = 0; i < length; i++ )
-	{
-		const sSegment& seg = segments[ i ];
-		line = "";
-
-		printTime( line, seg.time.begin, false );
-		line += " --> ";
-		printTime( line, seg.time.end, false );
-		line += "\r\n";
-		line += skipBlank( seg.text );
-		line += "\r\n\r\n";
-		CHECK( write( file, line ) );
-	}
-	return S_OK;
-}
-
-inline HRESULT TranscribeDlg::newSegmentCallback( Whisper::iContext* ctx, uint32_t n_new )
-{
-	using namespace Whisper;
-	CComPtr<iTranscribeResult> result;
-	CHECK( ctx->getResults( transcribeArgs.resultFlags, &result ) );
-	return logNewSegments( result, n_new );
-}
-
-HRESULT __cdecl TranscribeDlg::newSegmentCallbackStatic( Whisper::iContext* ctx, uint32_t n_new, void* user_data ) noexcept
-{
-	TranscribeDlg* dlg = (TranscribeDlg*)user_data;
-	return dlg->newSegmentCallback( ctx, n_new );
-}
-
-HRESULT __cdecl TranscribeDlg::encoderBeginCallback( Whisper::iContext* ctx, void* user_data ) noexcept
-{
-	TranscribeDlg* dlg = (TranscribeDlg*)user_data;
-	const eVisualState visualState = dlg->transcribeArgs.visualState;
-	switch( visualState )
-	{
-	case eVisualState::Idle:
-		return E_NOT_VALID_STATE;
 	case eVisualState::Running:
-		return S_OK;
+		return true;
+	case eVisualState::Idle:
 	case eVisualState::Stopping:
-		return S_FALSE;
 	default:
-		return E_UNEXPECTED;
+		return false;
 	}
 }
 

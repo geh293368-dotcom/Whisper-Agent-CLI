@@ -87,6 +87,9 @@
     <ClInclude Include="ModelAdvancedDlg.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+	<ClInclude Include="Core\SubtitlePipeline.h"><Filter>Header Files</Filter></ClInclude>
+	<ClInclude Include="Core\TranscriptionQueue.h"><Filter>Header Files</Filter></ClInclude>
+	<ClInclude Include="Core\TranscriptionService.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="WhisperDesktop.cpp">
@@ -134,6 +137,9 @@
     <ClCompile Include="Utils\DebugConsole.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+	<ClCompile Include="Core\SubtitlePipeline.cpp"><Filter>Source Files</Filter></ClCompile>
+	<ClCompile Include="Core\TranscriptionQueue.cpp"><Filter>Source Files</Filter></ClCompile>
+	<ClCompile Include="Core\TranscriptionService.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="WhisperDesktop.rc">

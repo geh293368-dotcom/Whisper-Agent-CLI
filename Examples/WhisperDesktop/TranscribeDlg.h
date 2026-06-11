@@ -6,11 +6,14 @@
 #include "Utils/LanguageDropdown.h"
 #include "Utils/TranslateCheckbox.h"
 #include "Utils/PendingState.h"
+#include "Core/TranscriptionQueue.h"
+#include "Core/TranscriptionService.h"
 
 class TranscribeDlg :
 	public CDialogImpl<TranscribeDlg>,
 	public CWinDataExchange<TranscribeDlg>,
-	public iThreadPoolCallback
+	public iThreadPoolCallback,
+	public ITranscriptionEvents
 {
 	AppState& appState;
 
@@ -117,14 +120,6 @@ private:
 		Stopping = 2
 	};
 
-	enum struct eBatchState : uint8_t
-	{
-		Pending = 0,
-		Running = 1,
-		Completed = 2,
-		Failed = 3
-	};
-
 	struct TranscribeArgs
 	{
 		CString pathMedia;
@@ -132,26 +127,15 @@ private:
 		uint32_t language;
 		bool translate;
 		eOutputFormat format;
-		Whisper::eResultFlags resultFlags;
 		volatile eVisualState visualState = (eVisualState)0;
-		uint64_t startTime;
-		int64_t mediaDuration;
 		CString errorMessage;
 	};
 	TranscribeArgs transcribeArgs;
 	CString lastInputPath;
 
-	struct BatchItem
-	{
-		CString inputPath;
-		CString outputPath;
-		eBatchState state = eBatchState::Pending;
-		HRESULT result = S_OK;
-	};
-	std::vector<BatchItem> batchItems;
-	int runningItem = -1;
+	TranscriptionQueue queue;
 
-	static CString formatStatus( eBatchState state, HRESULT hr );
+	static CString formatStatus( TranscriptionQueue::State state, HRESULT hr );
 	void refreshQueueDisplay();
 	void updateQueueButtons();
 	bool prepareBatchItems( const CString& explicitFolder );
@@ -168,16 +152,9 @@ private:
 	HRESULT transcribe();
 	void getThreadError();
 	
-	static HRESULT writeTextFile( const Whisper::sSegment* const segments, const size_t length, CAtlFile& file, bool timestamps );
-	static HRESULT writeSubRip( const Whisper::sSegment* const segments, const size_t length, CAtlFile& file );
-	static HRESULT writeWebVTT( const Whisper::sSegment* const segments, const size_t length, CAtlFile& file );
-
-	static HRESULT __cdecl newSegmentCallbackStatic( Whisper::iContext* ctx, uint32_t n_new, void* user_data ) noexcept;
-	static HRESULT __cdecl encoderBeginCallback( Whisper::iContext* ctx, void* user_data ) noexcept;
-	HRESULT newSegmentCallback( Whisper::iContext* ctx, uint32_t n_new );
-
-	static HRESULT __cdecl progressCallbackStatic( double p, Whisper::iContext* ctx, void* pv ) noexcept;
-	HRESULT progressCallback( double p ) noexcept;
+	HRESULT onProgress( double value ) noexcept override;
+	HRESULT onNewSegments( Whisper::iTranscribeResult* result, uint32_t count ) noexcept override;
+	bool shouldContinue() const noexcept override;
 
 	void onWmClose();
 };
