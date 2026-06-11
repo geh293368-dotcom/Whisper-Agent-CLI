@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { desktopBridge } from './bridge'
-import type { AppState, Page } from './types'
+import type { AppState, Job, Page, Segment } from './types'
 import { ResizableTable, TableColumn } from './ResizableTable'
 
 const getFilename = (path: string) => {
@@ -29,7 +29,21 @@ function App() {
       if (message.type === 'state') {
         setState(message.payload as AppState)
         setError('')
-      } else {
+      } else if (message.type === 'patch') {
+        setState(current => ({ ...current, ...(message.payload as Partial<AppState>) }))
+      } else if (message.type === 'jobUpdate') {
+        const update = message.payload as Job
+        setState(current => ({
+          ...current,
+          jobs: current.jobs.map(job => job.id === update.id ? update : job),
+        }))
+      } else if (message.type === 'segmentAdded') {
+        const segment = message.payload as Segment
+        setState(current => ({ ...current, segments: [...current.segments.slice(-4_999), segment] }))
+      } else if (message.type === 'logAdded') {
+        const { line } = message.payload as { line: string }
+        setState(current => ({ ...current, logs: `${current.logs}${line}`.slice(-200_000) }))
+      } else if (message.type === 'error') {
         setError((message.payload as { message: string }).message)
       }
     })

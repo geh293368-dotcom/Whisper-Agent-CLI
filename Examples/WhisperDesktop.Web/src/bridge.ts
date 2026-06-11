@@ -81,7 +81,13 @@ class BrowserMockBridge implements DesktopBridge {
         end: `00:00:${String(index * 3 + 2).padStart(2, '0')}.600`, text: `这是用于检查转录过程中界面布局的第 ${index + 1} 条字幕。`,
       }))
       mockState.logs = '[2026-06-11 18:30:00.000] [应用] 开始转录示例视频-1.mp4\n'
-      this.publish()
+      this.emit({
+        type: 'patch',
+        payload: { isRunning: true, canStart: false, globalStatus: mockState.globalStatus, segments: [] },
+      })
+      this.emit({ type: 'jobUpdate', payload: structuredClone(mockState.jobs[0]) })
+      mockState.segments.forEach(segment => this.emit({ type: 'segmentAdded', payload: structuredClone(segment) }))
+      this.emit({ type: 'logAdded', payload: { line: mockState.logs } })
     }
   }
 

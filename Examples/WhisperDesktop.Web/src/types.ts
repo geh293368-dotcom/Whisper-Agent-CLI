@@ -69,8 +69,8 @@ export interface AppState {
 }
 
 export interface HostMessage {
-  type: 'state' | 'error'
-  payload: AppState | { message: string }
+  type: 'state' | 'patch' | 'jobUpdate' | 'segmentAdded' | 'logAdded' | 'error'
+  payload: AppState | Partial<AppState> | Job | Segment | { line: string } | { message: string }
 }
 
 export interface DesktopCommand {

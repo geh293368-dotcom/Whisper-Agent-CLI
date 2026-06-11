@@ -25,6 +25,8 @@ public enum OutputLocationMode
 
 public partial class MainWindow : Window
 {
+    const int MaxInMemoryLogCharacters = 200_000;
+    static readonly TimeSpan ProgressUpdateInterval = TimeSpan.FromMilliseconds(200);
     static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -48,9 +50,7 @@ public partial class MainWindow : Window
     string modelStatus = "尚未加载模型";
     string globalStatus = "准备就绪";
     string logOutput = string.Empty;
-    readonly string logFilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "WhisperDesktop", "Logs", $"whisper-desktop-{DateTime.Now:yyyyMMdd}.log");
+    string LogFilePath => AppLogger.CurrentLogPath;
     string liveStatus = "正在读取录音设备";
     double modelProgress;
     bool isRunning;
@@ -100,6 +100,7 @@ public partial class MainWindow : Window
 
         LoadConfig();
         transcription = selectedEngine.Create();
+        logOutput = AppLogger.StartSession(selectedEngine.Name);
 
         InitializeComponent();
         Library.setLogSink(eLogLevel.Info, eLoggerFlags.SkipFormatMessage, OnNativeLog);
@@ -128,6 +129,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AppendLog("WebView2", "初始化失败", ex, "ERROR");
             MessageBox.Show(this, ex.Message, "WebView2 初始化失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -143,6 +145,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AppendLog("界面命令", "处理 WebView2 消息失败", ex, "ERROR");
             SendError(ex.Message);
         }
     }
@@ -205,7 +208,7 @@ public partial class MainWindow : Window
             var progress = new Progress<double>(value =>
             {
                 modelProgress = value;
-                PublishState();
+                SendPatch(new { modelProgress });
             });
             await transcription.LoadModelAsync(modelPath, progress, operationCancellation.Token);
             modelProgress = 1;
@@ -221,6 +224,7 @@ public partial class MainWindow : Window
         {
             modelStatus = "模型加载失败";
             globalStatus = ex.Message;
+            AppendLog("模型", "模型加载失败", ex, "ERROR");
             SendError(ex.Message);
         }
         finally
@@ -405,7 +409,13 @@ public partial class MainWindow : Window
         previewSegments.Clear();
         int completed = 0;
         int failed = 0;
-        PublishState();
+        SendPatch(new
+        {
+            isRunning,
+            canStart = CanStart,
+            segments = Array.Empty<object>(),
+            globalStatus,
+        });
 
         try
         {
@@ -418,12 +428,19 @@ public partial class MainWindow : Window
                 job.Error = null;
                 globalStatus = $"正在处理 {job.FileName}";
                 int segmentIndex = 0;
-                PublishState();
+                SendJobUpdate(job);
+                SendPatch(new { globalStatus, canStart = CanStart });
 
+                DateTime lastProgressUpdate = DateTime.MinValue;
                 var progress = new Progress<double>(value =>
                 {
                     job.Progress = value;
-                    PublishState();
+                    DateTime now = DateTime.UtcNow;
+                    if (value >= 1 || now - lastProgressUpdate >= ProgressUpdateInterval)
+                    {
+                        lastProgressUpdate = now;
+                        SendJobUpdate(job);
+                    }
                 });
                 try
                 {
@@ -435,7 +452,7 @@ public partial class MainWindow : Window
                         segment => Dispatcher.BeginInvoke(() =>
                         {
                             previewSegments.Add(new SubtitlePreviewItem(++segmentIndex, job.FileName, segment.Begin, segment.End, segment.Text));
-                            PublishState();
+                            SendSegmentAdded(previewSegments[^1]);
                         }),
                         operationCancellation.Token);
                     job.Progress = 1;
@@ -456,9 +473,9 @@ public partial class MainWindow : Window
                     job.StatusText = "失败";
                     job.Error = ex.Message;
                     failed++;
-                    AppendLog(job.FileName, $"错误：{ex.Message}");
+                    AppendLog(job.FileName, "转录失败", ex, "ERROR");
                 }
-                PublishState();
+                SendJobUpdate(job);
             }
             globalStatus = $"批量转录完成：成功 {completed}，失败 {failed}";
         }
@@ -469,7 +486,7 @@ public partial class MainWindow : Window
         finally
         {
             isRunning = false;
-            PublishState();
+            SendPatch(new { isRunning, globalStatus, canStart = CanStart });
         }
     }
 
@@ -486,7 +503,7 @@ public partial class MainWindow : Window
     {
         globalStatus = "正在停止当前任务...";
         operationCancellation?.Cancel();
-        PublishState();
+        SendPatch(new { globalStatus });
     }
 
     void RefreshCaptureDevices()
@@ -503,6 +520,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             liveStatus = $"无法读取录音设备：{ex.Message}";
+            AppendLog("录音设备", "读取设备失败", ex, "ERROR");
         }
         PublishState();
     }
@@ -515,26 +533,19 @@ public partial class MainWindow : Window
 
     bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected) && !isRunning && !isLoadingModel;
 
-    void AppendLog(string source, string text)
+    void AppendLog(string source, string text, Exception? exception = null, string level = "INFO")
     {
-        string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{source}] {text.Trim()}{Environment.NewLine}";
+        string line = AppLogger.Write(source, text, exception, level);
         logOutput += line;
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(logFilePath)!);
-            File.AppendAllText(logFilePath, line);
-        }
-        catch
-        {
-            // The in-app log remains available if disk logging is unavailable.
-        }
-        PublishState();
+        if (logOutput.Length > MaxInMemoryLogCharacters)
+            logOutput = logOutput[^MaxInMemoryLogCharacters..];
+        SendMessage(new { type = "logAdded", payload = new { line } });
     }
 
     void OpenLogFolder()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(logFilePath)!);
-        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{logFilePath}\"") { UseShellExecute = true });
+        Directory.CreateDirectory(Path.GetDirectoryName(LogFilePath)!);
+        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{LogFilePath}\"") { UseShellExecute = true });
     }
 
     void OnNativeLog(eLogLevel level, string message) => Dispatcher.BeginInvoke(() => AppendLog(level.ToString(), message));
@@ -563,11 +574,7 @@ public partial class MainWindow : Window
             isRunning,
             isLoadingModel,
             canStart = CanStart,
-            jobs = jobs.Select(job => new
-            {
-                id = job.InputPath, job.FileName, job.InputPath, job.RelativePath, job.SourceRoot,
-                selected = job.IsSelected, status = job.StatusText, job.Progress, job.Error, job.OutputPath,
-            }),
+            jobs = jobs.Select(SerializeJob),
             sources = sourceFolders.Select(source => new
             {
                 source.Path, source.Name, source.FileCount, selected = source.IsSelected,
@@ -577,7 +584,7 @@ public partial class MainWindow : Window
                 segment.Index, segment.FileName, begin = segment.BeginText, end = segment.EndText, segment.Text,
             }),
             logs = logOutput,
-            logFilePath,
+            logFilePath = LogFilePath,
             captureDevices = captureDevices.Select(device => new { id = device.Endpoint, name = device.Name }),
             selectedCaptureDevice = selectedCaptureDevice?.Endpoint,
             liveStatus,
@@ -588,9 +595,44 @@ public partial class MainWindow : Window
 
     void SendError(string message) => SendMessage(new { type = "error", payload = new { message } });
 
+    void SendPatch(object patch) => SendMessage(new { type = "patch", payload = patch });
+
+    void SendJobUpdate(TranscriptionJob job) => SendMessage(new
+    {
+        type = "jobUpdate",
+        payload = SerializeJob(job),
+    });
+
+    void SendSegmentAdded(SubtitlePreviewItem segment) => SendMessage(new
+    {
+        type = "segmentAdded",
+        payload = new
+        {
+            segment.Index,
+            segment.FileName,
+            begin = segment.BeginText,
+            end = segment.EndText,
+            segment.Text,
+        },
+    });
+
+    static object SerializeJob(TranscriptionJob job) => new
+    {
+        id = job.InputPath,
+        job.FileName,
+        job.InputPath,
+        job.RelativePath,
+        job.SourceRoot,
+        selected = job.IsSelected,
+        status = job.StatusText,
+        job.Progress,
+        job.Error,
+        job.OutputPath,
+    };
+
     void SendMessage(object message)
     {
-        if (WebView.CoreWebView2 is not null)
+        if (WebView?.CoreWebView2 is not null)
             WebView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message, JsonOptions));
     }
 
@@ -648,7 +690,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppendLog("配置", $"加载配置失败：{ex.Message}");
+            AppendLog("配置", "加载配置失败", ex, "ERROR");
         }
     }
 
@@ -679,7 +721,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppendLog("配置", $"保存配置失败：{ex.Message}");
+            AppendLog("配置", "保存配置失败", ex, "ERROR");
         }
     }
 
