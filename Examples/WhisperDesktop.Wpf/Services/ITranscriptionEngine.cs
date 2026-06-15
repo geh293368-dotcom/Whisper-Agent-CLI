@@ -3,6 +3,7 @@ using Whisper;
 namespace WhisperDesktop.Modern.Services;
 
 public readonly record struct TranscriptionSegment(TimeSpan Begin, TimeSpan End, string Text);
+public readonly record struct TranscriptionResult(string? OutputPath, int SegmentCount);
 
 public interface ITranscriptionEngine : IDisposable
 {
@@ -13,7 +14,7 @@ public interface ITranscriptionEngine : IDisposable
         IProgress<double>? progress,
         CancellationToken cancellationToken);
 
-    Task<string> TranscribeAsync(
+    Task<TranscriptionResult> TranscribeAsync(
         string inputPath,
         string outputFolder,
         eLanguage language,

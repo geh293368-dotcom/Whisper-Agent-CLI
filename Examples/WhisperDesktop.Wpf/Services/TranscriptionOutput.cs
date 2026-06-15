@@ -5,13 +5,16 @@ namespace WhisperDesktop.Modern.Services;
 
 static class TranscriptionOutput
 {
-    public static string Write(
+    public static TranscriptionResult Write(
         IReadOnlyList<SourceSegment> segments,
         string inputPath,
         string outputFolder,
         OutputFormat format)
     {
         IReadOnlyList<SubtitleCue> cues = SubtitlePipeline.Build(segments);
+        if (cues.Count == 0)
+            return new TranscriptionResult(null, 0);
+
         string content = format switch
         {
             OutputFormat.Text => SubtitlePipeline.RenderText(cues, false),
@@ -30,6 +33,6 @@ static class TranscriptionOutput
         };
         string outputPath = Path.Combine(outputFolder, Path.GetFileNameWithoutExtension(inputPath) + extension);
         File.WriteAllText(outputPath, content, new UTF8Encoding(true));
-        return outputPath;
+        return new TranscriptionResult(outputPath, cues.Count);
     }
 }

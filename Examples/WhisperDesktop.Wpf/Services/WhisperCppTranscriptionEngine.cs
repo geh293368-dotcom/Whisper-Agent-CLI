@@ -50,7 +50,7 @@ public sealed class WhisperCppTranscriptionEngine : ITranscriptionEngine
         progress?.Report(1);
     }
 
-    public async Task<string> TranscribeAsync(
+    public async Task<TranscriptionResult> TranscribeAsync(
         string inputPath,
         string outputFolder,
         eLanguage language,

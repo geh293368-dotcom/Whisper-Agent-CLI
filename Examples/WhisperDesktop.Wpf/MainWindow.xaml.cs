@@ -427,7 +427,9 @@ public partial class MainWindow : Window
                     {
                         job.Duration = duration;
                         if (failure is not null)
-                            AppendLog(job.FileName, "无法读取媒体时长，ETA 将忽略此文件", failure, "WARN");
+                        {
+                            MarkJobSkipped(job, "未检测到可用音频轨道", "无法读取音频，已跳过", failure);
+                        }
                         globalStatus = $"正在读取媒体时长：{completed} / {addedJobs.Count}";
                         SendJobUpdate(job);
                         SendPatch(new { globalStatus, batchStatistics = CreateBatchStatistics() });
@@ -454,7 +456,7 @@ public partial class MainWindow : Window
         bool selected = payload.GetProperty("selected").GetBoolean();
         TranscriptionJob? job = jobs.FirstOrDefault(item => item.InputPath == id);
         if (job is not null)
-            job.IsSelected = selected;
+            job.IsSelected = selected && job.State != JobState.Skipped;
         RebuildSources();
         QueueChanged();
     }
@@ -464,7 +466,7 @@ public partial class MainWindow : Window
         string? path = payload.GetProperty("path").GetString();
         bool selected = payload.GetProperty("selected").GetBoolean();
         foreach (TranscriptionJob job in jobs.Where(item => string.Equals(item.SourceRoot, path, StringComparison.OrdinalIgnoreCase)))
-            job.IsSelected = selected;
+            job.IsSelected = selected && job.State != JobState.Skipped;
         RebuildSources();
         QueueChanged();
     }
@@ -472,7 +474,7 @@ public partial class MainWindow : Window
     void SetAllSelected(bool selected)
     {
         foreach (TranscriptionJob job in jobs)
-            job.IsSelected = selected;
+            job.IsSelected = selected && job.State != JobState.Skipped;
         RebuildSources();
         QueueChanged();
     }
@@ -600,7 +602,8 @@ public partial class MainWindow : Window
         previewSegments.Clear();
         int completed = 0;
         int failed = 0;
-        TranscriptionJob[] selectedJobs = jobs.Where(job => job.IsSelected).ToArray();
+        int skipped = jobs.Count(job => job.IsSelected && job.State == JobState.Skipped);
+        TranscriptionJob[] selectedJobs = jobs.Where(job => job.IsSelected && job.State != JobState.Skipped).ToArray();
         foreach (TranscriptionJob job in selectedJobs)
         {
             job.Elapsed = null;
@@ -611,7 +614,7 @@ public partial class MainWindow : Window
                 job.Progress = 0;
             }
         }
-        AppendLog("批次", $"开始转录：{selectedJobs.Length} 个文件，总时长 {FormatDuration(TimeSpan.FromSeconds(selectedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0)))}");
+        AppendLog("批次", $"开始转录：{selectedJobs.Length} 个文件，已跳过 {skipped} 个，总时长 {FormatDuration(TimeSpan.FromSeconds(selectedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0)))}");
         SendPatch(new
         {
             isRunning,
@@ -651,7 +654,7 @@ public partial class MainWindow : Window
                 {
                     string targetFolder = GetOutputFolder(job);
                     Directory.CreateDirectory(targetFolder);
-                    job.OutputPath = await transcription.TranscribeAsync(
+                    TranscriptionResult result = await transcription.TranscribeAsync(
                         job.InputPath, targetFolder, selectedLanguage.Value, translate, selectedOutputFormat.Value,
                         progress,
                         segment => Dispatcher.BeginInvoke(() =>
@@ -661,9 +664,18 @@ public partial class MainWindow : Window
                         }),
                         operationCancellation.Token);
                     job.Progress = 1;
-                    job.State = JobState.Completed;
-                    job.StatusText = "完成";
-                    completed++;
+                    if (result.SegmentCount == 0 || string.IsNullOrWhiteSpace(result.OutputPath))
+                    {
+                        MarkJobSkipped(job, "未识别到语音内容", "转录完成但没有可输出的字幕，已跳过");
+                        skipped++;
+                    }
+                    else
+                    {
+                        job.OutputPath = result.OutputPath;
+                        job.State = JobState.Completed;
+                        job.StatusText = "完成";
+                        completed++;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -700,11 +712,11 @@ public partial class MainWindow : Window
                 SendJobUpdate(job);
                 SendPatch(new { batchStatistics = CreateBatchStatistics() });
             }
-            globalStatus = $"批量转录完成：成功 {completed}，失败 {failed}";
+            globalStatus = $"批量转录完成：成功 {completed}，跳过 {skipped}，失败 {failed}";
         }
         catch (OperationCanceledException)
         {
-            globalStatus = $"任务已停止：成功 {completed}，失败 {failed}";
+            globalStatus = $"任务已停止：成功 {completed}，跳过 {skipped}，失败 {failed}";
         }
         finally
         {
@@ -978,7 +990,7 @@ public partial class MainWindow : Window
         PublishState();
     }
 
-    bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning;
+    bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected && job.State != JobState.Skipped) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning;
 
     bool CanStartLive => transcription.IsModelLoaded
         && File.Exists(modelPath)
@@ -1000,6 +1012,7 @@ public partial class MainWindow : Window
             : selected.Sum(job => job.State switch
             {
                 JobState.Completed => job.Duration?.TotalSeconds ?? 0,
+                JobState.Skipped => job.Duration?.TotalSeconds ?? 0,
                 JobState.Running => (job.Duration?.TotalSeconds ?? 0) * Math.Clamp(job.Progress, 0, 1),
                 _ => 0,
             });
@@ -1057,10 +1070,21 @@ public partial class MainWindow : Window
     string FormatBatchSummary()
     {
         TranscriptionJob[] completed = jobs.Where(job => job.IsSelected && job.State == JobState.Completed).ToArray();
+        int skipped = jobs.Count(job => job.State == JobState.Skipped);
         TimeSpan elapsed = batchStopwatch?.Elapsed ?? TimeSpan.Zero;
         TimeSpan processed = TimeSpan.FromSeconds(completed.Sum(job => job.Duration?.TotalSeconds ?? 0));
         double speed = elapsed.TotalSeconds > 0 ? processed.TotalSeconds / elapsed.TotalSeconds : 0;
-        return $"完成音频 {FormatDuration(processed)}；总耗时 {FormatDuration(elapsed)}；平均速度 {(speed > 0 ? $"{speed:F1}x" : "未知")}";
+        return $"完成音频 {FormatDuration(processed)}；跳过 {skipped} 个；总耗时 {FormatDuration(elapsed)}；平均速度 {(speed > 0 ? $"{speed:F1}x" : "未知")}";
+    }
+
+    void MarkJobSkipped(TranscriptionJob job, string reason, string logMessage, Exception? exception = null)
+    {
+        job.State = JobState.Skipped;
+        job.StatusText = "已跳过";
+        job.Progress = 1;
+        job.Error = reason;
+        job.IsSelected = false;
+        AppendLog(job.FileName, logMessage, exception, "WARN");
     }
 
     static string FormatDuration(TimeSpan? value)

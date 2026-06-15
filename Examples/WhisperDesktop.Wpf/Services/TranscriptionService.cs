@@ -32,7 +32,7 @@ public sealed class TranscriptionService : ITranscriptionEngine
         mediaFoundation ??= Library.initMediaFoundation();
     }
 
-    public async Task<string> TranscribeAsync(
+    public async Task<TranscriptionResult> TranscribeAsync(
         string inputPath,
         string outputFolder,
         eLanguage language,

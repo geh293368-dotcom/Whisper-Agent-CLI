@@ -138,6 +138,7 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
       ? `预计 ${completionTime} 完成 · 剩余 ${formatDuration(state.batchStatistics.etaSeconds)}`
       : '预计完成时间 --'
   const completedCount = state.jobs.filter(job => job.selected && job.status === '完成').length
+  const skippedCount = state.jobs.filter(job => job.status === '已跳过').length
   const formatCompactDuration = (seconds: number) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return '0 分钟'
     if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} 分钟`
@@ -158,7 +159,7 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
       <td className="check-cell"><input type="checkbox" checked={job.selected} onChange={e => command('setJobSelected', { id: job.id, selected: e.target.checked })} /></td>
       <td><strong className="file-name">{job.fileName}</strong></td><td title={job.inputPath}>{job.relativePath}</td>
       <td className="timecode">{formatDuration(job.durationSeconds)}</td>
-      <td><span className={`job-status ${job.status === '完成' ? 'done' : ''}`}>{job.status}</span></td>
+      <td><span className={`job-status ${job.status === '完成' ? 'done' : job.status === '已跳过' ? 'skipped' : ''}`}>{job.status}</span></td>
       <td><div className="progress-track"><i style={{ width: `${Math.round(job.progress * 100)}%` }} /></div></td>
     </tr>
   )
@@ -210,7 +211,7 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
 
       <div className="batch-main">
         <section className="panel queue-panel">
-          <div className="panel-toolbar"><PanelHeading title="任务队列" caption={`已选 ${selectedCount} · 总时长 ${formatCompactDuration(state.batchStatistics.totalDurationSeconds)} · 已完成 ${completedCount}/${selectedCount}`} />
+          <div className="panel-toolbar"><PanelHeading title="任务队列" caption={`已选 ${selectedCount} · 总时长 ${formatCompactDuration(state.batchStatistics.totalDurationSeconds)} · 已完成 ${completedCount}/${selectedCount} · 已跳过 ${skippedCount}`} />
             <div className="text-actions"><button onClick={() => command('setAllSelected', true)}>全选</button><button onClick={() => command('setAllSelected', false)}>全不选</button><button onClick={() => command('removeSelectedRows')}>移除</button><button onClick={() => command('clearJobs')}>清空</button></div>
           </div>
           <ResizableTable
