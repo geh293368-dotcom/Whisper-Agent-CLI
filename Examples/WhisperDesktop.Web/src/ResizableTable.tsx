@@ -26,6 +26,8 @@ export function ResizableTable<T>({
   emptyText,
   className = '',
 }: ResizableTableProps<T>) {
+  const headerScrollRef = useRef<HTMLDivElement | null>(null)
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null)
   const [widths, setWidths] = useState<Record<string, number>>(() => {
     const initial: Record<string, number> = {}
     columns.forEach(col => {
@@ -38,6 +40,21 @@ export function ResizableTable<T>({
 
   // Refs to measure actual column widths from the DOM (for flex columns without initial width)
   const thRefs = useRef<Record<string, HTMLTableCellElement | null>>({})
+
+  const renderColGroup = () => (
+    <colgroup>
+      {columns.map(col => {
+        const width = widths[col.id]
+        return <col key={col.id} style={width !== undefined ? { width } : undefined} />
+      })}
+    </colgroup>
+  )
+
+  const syncHeaderScroll = () => {
+    if (headerScrollRef.current && bodyScrollRef.current) {
+      headerScrollRef.current.scrollLeft = bodyScrollRef.current.scrollLeft
+    }
+  }
 
   const handleMouseDown = (e: React.MouseEvent, columnId: string) => {
     e.preventDefault()
@@ -80,44 +97,44 @@ export function ResizableTable<T>({
 
   return (
     <div className={`table-wrap ${className}`}>
-      <table>
-        <thead>
-          <tr>
-            {columns.map(col => {
-              const width = widths[col.id]
-              const style: React.CSSProperties = {
-                position: 'relative',
-              }
-              if (width !== undefined) {
-                style.width = width
-              }
-              if (col.align) {
-                style.textAlign = col.align
-              }
-              return (
-                <th
-                  key={col.id}
-                  ref={el => { thRefs.current[col.id] = el }}
-                  style={style}
-                  className={col.className}
-                >
-                  {col.name}
-                  <div className="resizer" onMouseDown={e => handleMouseDown(e, col.id)} />
-                </th>
-              )
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {data.map(item => renderRow(item))}
-        </tbody>
-      </table>
-      {data.length === 0 && (
-        <div className="empty-state">
-          <span>＋</span>
-          <p>{emptyText}</p>
-        </div>
-      )}
+      <div className="table-head-scroll" ref={headerScrollRef}>
+        <table>
+          {renderColGroup()}
+          <thead>
+            <tr>
+              {columns.map(col => {
+                const style: React.CSSProperties = { position: 'relative' }
+                if (col.align) style.textAlign = col.align
+                return (
+                  <th
+                    key={col.id}
+                    ref={el => { thRefs.current[col.id] = el }}
+                    style={style}
+                    className={col.className}
+                  >
+                    {col.name}
+                    <div className="resizer" onMouseDown={e => handleMouseDown(e, col.id)} />
+                  </th>
+                )
+              })}
+            </tr>
+          </thead>
+        </table>
+      </div>
+      <div className="table-body-scroll" ref={bodyScrollRef} onScroll={syncHeaderScroll}>
+        <table>
+          {renderColGroup()}
+          <tbody>
+            {data.map(item => renderRow(item))}
+          </tbody>
+        </table>
+        {data.length === 0 && (
+          <div className="empty-state">
+            <span>＋</span>
+            <p>{emptyText}</p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
