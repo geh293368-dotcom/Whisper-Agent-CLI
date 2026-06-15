@@ -49,7 +49,7 @@ const mockState: AppState = {
   selectedEngine: 'cuda', selectedLanguage: 'zh', selectedFormat: 'srt', selectedOutputLocation: 'selected',
   translate: false, modelPath: '', modelStatus: '尚未加载模型', modelProgress: 0,
   modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
-  terminologyEnabled: false, terminologyDirectory: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\terminology',
+  terminologyEnabled: false, developerDiagnostics: false, terminologyDirectory: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\terminology',
   terminologyPacks: [
     { id: 'game-vfx-course', name: 'Unity 游戏特效课程', description: '来自字幕评估报告的 Unity、MOBA 和游戏特效错词', enabled: true, priority: 90, termCount: 16, selected: true, terms: [
       { text: '光晕', category: '特效', corrections: ['光运'] },
@@ -77,9 +77,15 @@ const mockState: AppState = {
 class BrowserMockBridge implements DesktopBridge {
   private listeners = new Set<(message: HostMessage) => void>()
 
-  send(action: string) {
+  send(action: string, payload?: unknown) {
     if (action === 'initialize') {
       queueMicrotask(() => this.publish())
+    } else if (action === 'updateSetting') {
+      const setting = payload as { name?: keyof AppState; value?: unknown }
+      if (setting?.name && setting.name in mockState) {
+        ;(mockState as unknown as Record<string, unknown>)[setting.name] = setting.value
+        this.publish()
+      }
     } else if (action === 'addFiles') {
       mockState.jobs = Array.from({ length: 14 }, (_, index) => ({
         id: `mock-${index}`, fileName: `示例视频-${index + 1}.mp4`, inputPath: `D:\\Media\\课程\\示例视频-${index + 1}.mp4`,

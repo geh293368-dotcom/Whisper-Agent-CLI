@@ -1,4 +1,4 @@
-export type Page = 'batch' | 'live' | 'settings'
+export type Page = 'batch' | 'live' | 'settings' | 'about'
 
 export interface Option {
   id: string
@@ -84,6 +84,7 @@ export interface AppState {
   modelLoadElapsedSeconds: number
   autoLoadModel: boolean
   terminologyEnabled: boolean
+  developerDiagnostics: boolean
   terminologyDirectory: string
   terminologyPacks: TerminologyPack[]
   outputFolder: string

@@ -82,6 +82,7 @@ public partial class MainWindow : Window
     bool liveStalled;
     bool translate;
     bool terminologyEnabled;
+    bool developerDiagnostics;
     bool terminologySelectionConfigured;
     Stopwatch? batchStopwatch;
     Stopwatch? modelLoadStopwatch;
@@ -158,8 +159,16 @@ public partial class MainWindow : Window
         try
         {
             await WebView.EnsureCoreWebView2Async();
-            WebView.CoreWebView2.Settings.AreDevToolsEnabled = true;
-            WebView.CoreWebView2.Settings.IsZoomControlEnabled = true;
+            CoreWebView2Settings settings = WebView.CoreWebView2.Settings;
+#if DEBUG
+            settings.AreDevToolsEnabled = true;
+            settings.AreDefaultContextMenusEnabled = true;
+            settings.IsZoomControlEnabled = true;
+#else
+            settings.AreDevToolsEnabled = false;
+            settings.AreDefaultContextMenusEnabled = false;
+            settings.IsZoomControlEnabled = false;
+#endif
             WebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
             string webRoot = Path.Combine(AppContext.BaseDirectory, "Web");
@@ -354,6 +363,7 @@ public partial class MainWindow : Window
         }
         RebuildSources();
         QueueChanged();
+        LogImportSummary("添加文件", added);
         await ProbeDurationsAsync(added);
     }
 
@@ -384,6 +394,7 @@ public partial class MainWindow : Window
         }
         RebuildSources();
         globalStatus = $"从 {root} 添加了 {jobs.Count - before} 个媒体文件";
+        LogImportSummary("添加文件夹", added, root);
         PublishState();
         await ProbeDurationsAsync(added);
     }
@@ -403,6 +414,7 @@ public partial class MainWindow : Window
             return;
 
         isScanningMedia = true;
+        Stopwatch scanStopwatch = Stopwatch.StartNew();
         durationScanCancellation?.Dispose();
         durationScanCancellation = new CancellationTokenSource();
         CancellationToken cancellationToken = durationScanCancellation.Token;
@@ -449,9 +461,13 @@ public partial class MainWindow : Window
         catch (OperationCanceledException)
         {
             globalStatus = "媒体时长读取已取消";
+            AppendLog("媒体扫描", $"读取已取消，已耗时 {scanStopwatch.Elapsed.TotalSeconds:F1} 秒", level: "WARN");
         }
         finally
         {
+            scanStopwatch.Stop();
+            if (!cancellationToken.IsCancellationRequested)
+                LogDurationScanSummary(addedJobs, scanStopwatch.Elapsed);
             isScanningMedia = false;
             durationScanCancellation?.Dispose();
             durationScanCancellation = null;
@@ -557,6 +573,10 @@ public partial class MainWindow : Window
             case "terminologyEnabled":
                 terminologyEnabled = value.GetBoolean();
                 break;
+            case "developerDiagnostics":
+                developerDiagnostics = value.GetBoolean();
+                AppendLog("开发者诊断", developerDiagnostics ? "已开启诊断模式预留开关" : "已关闭诊断模式预留开关");
+                break;
             case "autoLoadModel":
                 autoLoadModel = value.GetBoolean();
                 break;
@@ -644,7 +664,12 @@ public partial class MainWindow : Window
                 job.Progress = 0;
             }
         }
-        AppendLog("批次", $"开始转录：{selectedJobs.Length} 个文件，已跳过 {skipped} 个，总时长 {FormatDuration(TimeSpan.FromSeconds(selectedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0)))}");
+        string outputLocation = selectedOutputLocation.Value == OutputLocationMode.SourceFolder
+            ? selectedOutputLocation.Name
+            : $"{selectedOutputLocation.Name}（{outputFolder}）";
+        AppendLog("批次",
+            $"开始转录：{selectedJobs.Length} 个文件，已跳过 {skipped} 个，总时长 {FormatDuration(TimeSpan.FromSeconds(selectedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0)))}；" +
+            $"总大小 {FormatFileSize(SumFileSize(selectedJobs))}；格式 {selectedOutputFormat.Name}；输出 {outputLocation}；引擎 {selectedEngine.Name}；语言 {selectedLanguage.Name}；翻译 {(translate ? "开启" : "关闭")}；术语词库 {(terminologyEnabled ? "开启" : "关闭")}");
         if (terminologyEnabled)
         {
             AppendLog("术语词库",
@@ -1029,6 +1054,27 @@ public partial class MainWindow : Window
         PublishState();
     }
 
+    void LogImportSummary(string source, IReadOnlyList<TranscriptionJob> addedJobs, string? root = null)
+    {
+        string rootText = string.IsNullOrWhiteSpace(root) ? string.Empty : $"，来源 {root}";
+        TimeSpan queueDuration = TimeSpan.FromSeconds(jobs.Sum(job => job.Duration?.TotalSeconds ?? 0));
+        int queueUnknownDuration = jobs.Count(job => job.Duration is null);
+        AppendLog("任务导入",
+            $"{source}完成：新增 {addedJobs.Count} 个文件，队列共 {jobs.Count} 个，已选 {jobs.Count(job => job.IsSelected)} 个，" +
+            $"新增大小 {FormatFileSize(SumFileSize(addedJobs))}，队列总大小 {FormatFileSize(SumFileSize(jobs))}，" +
+            $"已知总时长 {FormatDuration(queueDuration)}，未知时长 {queueUnknownDuration} 个{rootText}");
+    }
+
+    void LogDurationScanSummary(IReadOnlyList<TranscriptionJob> scannedJobs, TimeSpan elapsed)
+    {
+        int knownDurationCount = scannedJobs.Count(job => job.Duration is not null);
+        int unknownDurationCount = scannedJobs.Count - knownDurationCount;
+        TimeSpan totalDuration = TimeSpan.FromSeconds(scannedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0));
+        AppendLog("媒体扫描",
+            $"扫描完成：成功读取 {knownDurationCount} 个，未知 {unknownDurationCount} 个，" +
+            $"可识别总时长 {FormatDuration(totalDuration)}，文件大小 {FormatFileSize(SumFileSize(scannedJobs))}，耗时 {elapsed.TotalSeconds:F1} 秒");
+    }
+
     bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected && job.State != JobState.Skipped) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning;
 
     bool CanStartLive => transcription.IsModelLoaded
@@ -1136,6 +1182,33 @@ public partial class MainWindow : Window
             : $"{duration.Minutes:00}:{duration.Seconds:00}";
     }
 
+    static long SumFileSize(IEnumerable<TranscriptionJob> items) => items.Sum(job => GetFileSize(job.InputPath));
+
+    static long GetFileSize(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    static string FormatFileSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = Math.Max(0, bytes);
+        int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return unit == 0 ? $"{value:F0} {units[unit]}" : $"{value:F1} {units[unit]}";
+    }
+
     void AppendLog(string source, string text, Exception? exception = null, string level = "INFO")
     {
         string line = AppLogger.Write(source, text, exception, level);
@@ -1194,6 +1267,7 @@ public partial class MainWindow : Window
             modelLoadElapsedSeconds,
             autoLoadModel,
             terminologyEnabled,
+            developerDiagnostics,
             terminologyDirectory = terminologyService.DirectoryPath,
             terminologyPacks = terminologyPacks.Select(pack => new
             {
@@ -1363,6 +1437,7 @@ public partial class MainWindow : Window
                     recentModels = config.RecentModels ?? new();
                     selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
                     terminologyEnabled = config.TerminologyEnabled;
+                    developerDiagnostics = config.DeveloperDiagnostics;
                     if (config.SelectedTerminologyPacks is not null)
                     {
                         selectedTerminologyPackIds = config.SelectedTerminologyPacks;
@@ -1400,6 +1475,7 @@ public partial class MainWindow : Window
                 RecentModels = recentModels,
                 SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
                 TerminologyEnabled = terminologyEnabled,
+                DeveloperDiagnostics = developerDiagnostics,
                 SelectedTerminologyPacks = selectedTerminologyPackIds,
             };
 
@@ -1425,6 +1501,7 @@ public partial class MainWindow : Window
         public List<string> RecentModels { get; set; } = new();
         public string? SelectedCaptureEndpoint { get; set; }
         public bool TerminologyEnabled { get; set; } = false;
+        public bool DeveloperDiagnostics { get; set; } = false;
         public List<string>? SelectedTerminologyPacks { get; set; }
     }
 

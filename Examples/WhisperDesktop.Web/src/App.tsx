@@ -13,7 +13,7 @@ const emptyState: AppState = {
   engines: [], languages: [], formats: [], outputLocations: [], selectedEngine: '', selectedLanguage: '',
   selectedFormat: '', selectedOutputLocation: '', translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
   modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
-  terminologyEnabled: false, terminologyDirectory: '', terminologyPacks: [],
+  terminologyEnabled: false, developerDiagnostics: false, terminologyDirectory: '', terminologyPacks: [],
   outputFolder: '', globalStatus: '正在初始化...', isRunning: false, isLoadingModel: false,
   isScanningMedia: false,
   batchStatistics: { selectedCount: 0, knownDurationCount: 0, unknownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0, etaIsPartial: false, isEstimating: false },
@@ -29,6 +29,7 @@ function App() {
   const [error, setError] = useState('')
   const [previewTab, setPreviewTab] = useState<'segments' | 'logs'>('segments')
   const pendingSegments = useRef<Segment[]>([])
+  const previousPage = useRef<Page>('batch')
   const selectedCount = useMemo(() => state.jobs.filter(job => job.selected).length, [state.jobs])
 
   useEffect(() => {
@@ -82,11 +83,21 @@ function App() {
 
   const command = (action: string, payload?: unknown) => desktopBridge.send(action, payload)
   const updateSetting = (name: string, value: unknown) => command('updateSetting', { name, value })
+  const openAbout = () => {
+    setPage(current => {
+      if (current === 'about') return previousPage.current === 'about' ? 'batch' : previousPage.current
+      previousPage.current = current
+      return 'about'
+    })
+  }
+  const closeAbout = () => setPage(previousPage.current === 'about' ? 'batch' : previousPage.current)
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">W</span><div><strong>Whisper</strong><small>Desktop Studio</small></div></div>
+        <button className="brand" type="button" onClick={openAbout} aria-label="打开关于页面" title="关于 Whisper Desktop">
+          <span className="brand-mark">W</span><span><strong>Whisper</strong><small>Desktop Studio</small></span>
+        </button>
         <nav>
           <NavButton active={page === 'batch'} label="批量字幕" icon="▤" onClick={() => setPage('batch')} />
           <NavButton active={page === 'live'} label="实时字幕" icon="◉" onClick={() => setPage('live')} />
@@ -104,6 +115,7 @@ function App() {
           setPreviewTab={setPreviewTab} command={command} />}
         {page === 'live' && <LivePage state={state} command={command} updateSetting={updateSetting} />}
         {page === 'settings' && <SettingsPage state={state} command={command} updateSetting={updateSetting} />}
+        {page === 'about' && <AboutPage state={state} onBack={closeAbout} />}
       </main>
     </div>
   )
@@ -333,6 +345,49 @@ function LivePage({ state, command, updateSetting }: { state: AppState; command:
   </div>
 }
 
+function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
+  const selectedEngine = state.engines.find(engine => engine.id === state.selectedEngine)?.name || state.selectedEngine || '未选择'
+  const selectedLanguage = state.languages.find(language => language.id === state.selectedLanguage)?.name || state.selectedLanguage || '未选择'
+  const activeTerminologyPacks = state.terminologyPacks.filter(pack => pack.selected).map(pack => pack.name).join('、') || '未启用'
+  const rows = [
+    ['运行方式', '本地 Whisper / whisper.cpp / WebView2 / React'],
+    ['推理引擎', selectedEngine],
+    ['识别语言', selectedLanguage],
+    ['当前模型', state.modelStatus || '尚未加载'],
+    ['默认输出目录', state.outputFolder || '未设置'],
+    ['日志文件', state.logFilePath || '尚未创建'],
+    ['术语词库目录', state.terminologyDirectory || '未初始化'],
+    ['已选术语词库', activeTerminologyPacks],
+  ]
+
+  return <div className="page narrow-page about-page">
+    <header className="page-header about-header">
+      <div><p className="eyebrow">ABOUT</p><h1>Whisper Desktop</h1><p>面向批量字幕与实时字幕的本地转写工作台。</p></div>
+      <button className="button" onClick={onBack}>返回</button>
+    </header>
+
+    <section className="about-hero panel">
+      <span className="about-mark">W</span>
+      <div>
+        <h2>Whisper Desktop Studio</h2>
+        <p>把模型、任务队列、日志与字幕预览集中在一个桌面界面里，适合剪辑、教程和长素材转写流程。</p>
+      </div>
+    </section>
+
+    <section className="panel about-section">
+      <PanelHeading title="当前环境" caption="这些信息来自当前宿主状态，便于排查模型、输出和词库配置" />
+      <div className="about-grid">
+        {rows.map(([label, value]) => <div className="about-row" key={label}><span>{label}</span><strong title={value}>{value}</strong></div>)}
+      </div>
+    </section>
+
+    <section className="panel about-section">
+      <PanelHeading title="隐私与组件" caption="默认工作流在本机完成，后续接入在线 AI 前会明确提供开关" />
+      <p className="about-note">批量与实时转写默认在本机运行；当前界面的模型加载、字幕生成、日志记录和术语词库读取都由桌面宿主协调。在线 AI 优化功能接入前，不会自动上传字幕内容。</p>
+    </section>
+  </div>
+}
+
 function SettingsPage({ state, command, updateSetting }: { state: AppState; command: Command; updateSetting(name: string, value: unknown): void }) {
   return <div className="page narrow-page"><header className="page-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>管理推理引擎、模型以及识别语言配置。</p></div></header>
     <div className="settings-grid">
@@ -371,6 +426,14 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
             </span>
             <em>{pack.termCount} 词</em>
           </label>)}
+        </div>
+      </section>
+      <section className="panel full diagnostics-panel"><PanelHeading title="开发者诊断" caption="预留给字幕评分、AI 优化对比和质量报告，不影响普通用户工作流" />
+        <label className="toggle-row"><input type="checkbox" checked={state.developerDiagnostics} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('developerDiagnostics', e.target.checked)} /><span><strong>启用开发者诊断模式</strong><small>当前版本只保存开关并标记诊断意图；接入 AI 后再生成评分、规则命中和质量报告。</small></span></label>
+        <div className="diagnostics-preview">
+          <div><span>计划输出</span><strong>批次质量摘要、单文件评分、优化前后对比、规则命中明细</strong></div>
+          <div><span>默认可见性</span><strong>仅诊断模式可见，不进入普通用户主流程</strong></div>
+          <div><span>报告格式</span><strong>JSON / Markdown，后续随 AI 字幕优化一起接入</strong></div>
         </div>
       </section>
     </div>
