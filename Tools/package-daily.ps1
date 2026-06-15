@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $project = Join-Path $repoRoot 'Examples\WhisperDesktop.Wpf\WhisperDesktop.Wpf.csproj'
-$existingBuildOutput = Join-Path $repoRoot 'Examples\WhisperDesktop.Wpf\bin\x64\Release\net9.0-windows'
+$existingBuildOutput = Join-Path $repoRoot 'Examples\WhisperDesktop.Wpf\bin\x64\Release\net10.0-windows'
 $isolatedBuildOutput = Join-Path $repoRoot ".tmp\daily-build-$Date"
 $dailyRoot = Join-Path $repoRoot 'Releases\Daily'
 $dateRoot = Join-Path $dailyRoot $Date
@@ -65,7 +65,7 @@ Git branch: $branch
 Git commit: $commit
 Uncommitted changes: $dirty
 Configuration: Release / x64
-Runtime: framework-dependent (.NET 9 Desktop Runtime required)
+Runtime: framework-dependent (.NET 10 Desktop Runtime required)
 "@ | Set-Content -LiteralPath (Join-Path $stagingApp 'BUILD-INFO.txt') -Encoding UTF8
 
 Compress-Archive -Path $stagingApp -DestinationPath $stagingZip -CompressionLevel Optimal -Force

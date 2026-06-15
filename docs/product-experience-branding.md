@@ -194,16 +194,23 @@ settings.IsZoomControlEnabled = false;
 
 ## 9. .NET 10 升级
 
-当前项目目标是 `.NET 9 / net9.0-windows`。后续可以迁移到 .NET 10 LTS，但它不会直接改善 React 界面、WebView2 右键菜单或 whisper.cpp CUDA 性能。
+状态：已开始迁移现代 WPF 客户端与现代 UI 测试。
 
-推荐顺序：
+现代 WPF 客户端从 `.NET 9 / net9.0-windows` 迁移到 `.NET 10 / net10.0-windows`。这主要是运行时生命周期和维护周期升级，不会直接改善 React 界面、WebView2 右键菜单或 whisper.cpp CUDA 性能。
 
-1. 先完成当前批次统计和近期界面优化。
-2. 安装 .NET 10 SDK，并更新兼容的 Visual Studio 工具链。
-3. 单独迁移到 `net10.0-windows`。
-4. 验证 WebView2、WhisperNet、原生 DLL、发布包和配置升级。
+迁移范围：
 
-.NET 10 升级应作为独立提交，避免和 UI 或推理功能混在一起。
+- `Examples/WhisperDesktop.Wpf` 迁移到 `net10.0-windows`。
+- `Tools/ModernUiTests` 迁移到 `net10.0`。
+- 每日构建脚本更新到 `net10.0-windows` 输出路径，并声明需要 .NET 10 Desktop Runtime。
+- `WhisperNet`、命令行示例、PowerShell 模块和旧工具暂不在本轮迁移，继续保留原有目标框架以降低兼容风险。
+
+验证项：
+
+1. `dotnet build Examples\WhisperDesktop.Wpf\WhisperDesktop.Wpf.csproj -c Release -p:Platform=x64`
+2. `dotnet run --project Tools\ModernUiTests\ModernUiTests.csproj -c Release`
+3. `Tools\package-daily.cmd`
+4. 启动 `WhisperDesktop.Modern.exe` 做一次冒烟检查。
 
 ## 10. 建议优先级
 
@@ -224,6 +231,6 @@ settings.IsZoomControlEnabled = false;
 
 ### 后续架构工作
 
-1. 迁移 .NET 10 LTS。
+1. 完成 .NET 10 LTS 迁移验证与发布包冒烟。
 2. 接入本地 LLM 字幕后处理。
 3. 增加 RAG、术语库和虚拟领域画像。

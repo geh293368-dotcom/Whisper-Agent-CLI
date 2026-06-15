@@ -78,12 +78,12 @@ Releases\Daily\2026-06-13\WhisperDesktop-2026-06-13-win-x64.zip
 每日构建使用独立的临时输出目录，因此正在运行的客户端不会锁住打包所需文件。
 如需重新整理已有编译结果而不再次编译，可以运行
 `Tools\package-daily.cmd -SkipBuild`。每日包为免安装的便携版，目标电脑需要安装
-.NET 9 Desktop Runtime。
+.NET 10 Desktop Runtime。
 
 ### 前置条件
 
-- **Visual Studio 2022**（v143 工具链，含 C++ 桌面开发）
-- **.NET 9 SDK**
+- **Visual Studio 2022 / 2026**（含 C++ x64 桌面开发工具链；.NET 10 推荐使用兼容的新版本 Visual Studio）
+- **.NET 10 SDK**
 - **Node.js**（用于构建 Web 前端）
 - **CUDA Toolkit**（可选，编译 CUDA 后端时需要）
 
@@ -175,7 +175,7 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 
 - 请确保输出目录中存在 `Whisper.dll`
 - 请确保模型文件路径正确
-- .NET 示例默认目标为 `net9.0-windows`，需要本机安装对应 .NET 运行时
+- 现代 WPF 客户端目标为 `net10.0-windows`，需要本机安装对应 .NET 运行时；部分旧 .NET 示例仍保留 `net6.0-windows`
 - 运行 WPF 版本需要系统已安装 WebView2 Runtime（Windows 11 及较新的 Windows 10 通常已内置）
 
 ## 界面与功能概览
