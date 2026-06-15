@@ -128,6 +128,25 @@ namespace
 			(long long)hours, minutes, seconds, comma ? ',' : '.', milliseconds );
 		return buffer;
 	}
+	std::string getComparisonText( const std::string& text )
+	{
+		std::string result;
+		size_t offset = 0;
+		while( offset < text.size() )
+		{
+			size_t next = nextCodePoint( text, offset );
+			std::string cp = text.substr( offset, next - offset );
+			if( cp != " " && !isBreakPunctuation( cp ) )
+			{
+				if( cp.size() == 1 && cp[ 0 ] >= 'A' && cp[ 0 ] <= 'Z' )
+					result += (char)( cp[ 0 ] + 32 );
+				else
+					result += cp;
+			}
+			offset = next;
+		}
+		return result;
+	}
 }
 
 std::vector<Subtitle::Cue> Subtitle::build( const std::vector<SourceSegment>& source, const Options& options )
@@ -136,7 +155,29 @@ std::vector<Subtitle::Cue> Subtitle::build( const std::vector<SourceSegment>& so
 	const size_t maxCueCharacters = (size_t)options.maxCharactersPerLine * std::max<uint32_t>( 1, options.maxLines );
 	int64_t previousEnd = -options.minimumGap;
 
-	for( const SourceSegment& input : source )
+	std::vector<SourceSegment> mergedSource;
+	for ( const auto& input : source )
+	{
+		std::string normalized = normalizeWhitespace( input.text );
+		if ( normalized.empty() )
+			continue;
+
+		int64_t begin = std::max<int64_t>( 0, input.begin );
+		int64_t end = std::max( input.end, begin + options.minimumDuration );
+
+		if ( !mergedSource.empty() )
+		{
+			auto& last = mergedSource.back();
+			if ( getComparisonText( last.text ) == getComparisonText( input.text ) )
+			{
+				last.end = std::max( last.end, end );
+				continue;
+			}
+		}
+		mergedSource.push_back( { begin, end, input.text } );
+	}
+
+	for( const SourceSegment& input : mergedSource )
 	{
 		const std::string normalized = normalizeWhitespace( input.text );
 		if( normalized.empty() )
@@ -145,8 +186,8 @@ std::vector<Subtitle::Cue> Subtitle::build( const std::vector<SourceSegment>& so
 		if( chunks.empty() )
 			continue;
 
-		int64_t sourceBegin = std::max<int64_t>( 0, input.begin );
-		int64_t sourceEnd = std::max( input.end, sourceBegin + options.minimumDuration );
+		int64_t sourceBegin = input.begin;
+		int64_t sourceEnd = input.end;
 		const int64_t sourceDuration = sourceEnd - sourceBegin;
 		size_t totalCharacters = 0;
 		for( const std::string& chunk : chunks )

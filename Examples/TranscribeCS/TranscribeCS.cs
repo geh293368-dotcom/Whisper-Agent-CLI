@@ -1,4 +1,4 @@
-﻿namespace TranscribeCS;
+namespace TranscribeCS;
 using Whisper;
 
 enum eFileOpenMode: byte
@@ -87,26 +87,79 @@ static class Program
 		}
 	}
 
+	struct MergedSegment
+	{
+		public TimeSpan Begin;
+		public TimeSpan End;
+		public string Text;
+	}
+
+	static string NormalizeForComparison( string text )
+	{
+		if( string.IsNullOrEmpty( text ) )
+			return string.Empty;
+		var sb = new System.Text.StringBuilder();
+		foreach( char c in text )
+		{
+			if( char.IsLetterOrDigit( c ) )
+				sb.Append( char.ToLowerInvariant( c ) );
+		}
+		return sb.ToString();
+	}
+
+	static List<MergedSegment> mergeSegments( ReadOnlySpan<sSegment> segments )
+	{
+		var result = new List<MergedSegment>();
+		foreach( sSegment seg in segments )
+		{
+			string text = seg.text?.Trim() ?? string.Empty;
+			if( string.IsNullOrEmpty( text ) )
+				continue;
+
+			TimeSpan begin = seg.time.begin;
+			TimeSpan end = seg.time.end;
+			if( end <= begin )
+				end = begin + TimeSpan.FromMilliseconds( 800 ); // Enforce minimum duration of 800ms
+
+			if( result.Count > 0 )
+			{
+				var last = result[ result.Count - 1 ];
+				if( string.Equals( NormalizeForComparison( last.Text ), NormalizeForComparison( text ), StringComparison.OrdinalIgnoreCase ) )
+				{
+					result[ result.Count - 1 ] = new MergedSegment {
+						Begin = last.Begin,
+						End = end > last.Begin ? end : last.End,
+						Text = last.Text
+					};
+					continue;
+				}
+			}
+			result.Add( new MergedSegment { Begin = begin, End = end, Text = text } );
+		}
+		return result;
+	}
+
 	static void writeTextFile( Context context, string audioPath )
 	{
 		using var stream = File.CreateText( Path.ChangeExtension( audioPath, ".txt" ) );
-		foreach( sSegment seg in context.results().segments )
-			stream.WriteLine( seg.text );
+		var merged = mergeSegments( context.results().segments );
+		foreach( var seg in merged )
+			stream.WriteLine( seg.Text );
 	}
 
 	static void writeSubRip( Context context, string audioPath, CommandLineArgs cliArgs )
 	{
 		using var stream = File.CreateText( Path.ChangeExtension( audioPath, ".srt" ) );
-		var segments = context.results( eResultFlags.Timestamps ).segments;
+		var merged = mergeSegments( context.results( eResultFlags.Timestamps ).segments );
 
-		for( int i = 0; i < segments.Length; i++ )
+		for( int i = 0; i < merged.Count; i++ )
 		{
 			stream.WriteLine( i + 1 + cliArgs.offset_n );
-			sSegment seg = segments[ i ];
-			string begin = Transcribe.printTimeWithComma( seg.time.begin );
-			string end = Transcribe.printTimeWithComma( seg.time.end );
+			var seg = merged[ i ];
+			string begin = Transcribe.printTimeWithComma( seg.Begin );
+			string end = Transcribe.printTimeWithComma( seg.End );
 			stream.WriteLine( "{0} --> {1}", begin, end );
-			stream.WriteLine( seg.text );
+			stream.WriteLine( seg.Text );
 			stream.WriteLine();
 		}
 	}
@@ -117,12 +170,13 @@ static class Program
 		stream.WriteLine( "WEBVTT" );
 		stream.WriteLine();
 
-		foreach( sSegment seg in context.results( eResultFlags.Timestamps ).segments )
+		var merged = mergeSegments( context.results( eResultFlags.Timestamps ).segments );
+		foreach( var seg in merged )
 		{
-			string begin = Transcribe.printTime( seg.time.begin );
-			string end = Transcribe.printTime( seg.time.end );
+			string begin = Transcribe.printTime( seg.Begin );
+			string end = Transcribe.printTime( seg.End );
 			stream.WriteLine( "{0} --> {1}", begin, end );
-			stream.WriteLine( seg.text );
+			stream.WriteLine( seg.Text );
 			stream.WriteLine();
 		}
 	}

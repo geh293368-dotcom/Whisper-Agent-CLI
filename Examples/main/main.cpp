@@ -243,45 +243,116 @@ namespace
 		return true;
 	}
 
+	bool isContinuationByte( unsigned char c )
+	{
+		return ( c & 0xC0 ) == 0x80;
+	}
+
+	size_t nextCodePoint( const std::string& text, size_t offset )
+	{
+		if( offset >= text.size() )
+			return text.size();
+		offset++;
+		while( offset < text.size() && isContinuationByte( (unsigned char)text[ offset ] ) )
+			offset++;
+		return offset;
+	}
+
+	std::string getComparisonTextWd( const std::string& text )
+	{
+		std::string result;
+		size_t offset = 0;
+		while( offset < text.size() )
+		{
+			size_t next = nextCodePoint( text, offset );
+			std::string cp = text.substr( offset, next - offset );
+			if( cp != " " && cp != "," && cp != "." && cp != "!" && cp != "?" && cp != ";" && cp != ":" &&
+				cp != "\xEF\xBC\x8C" && cp != "\xE3\x80\x82" && cp != "\xEF\xBC\x81" &&
+				cp != "\xEF\xBC\x9F" && cp != "\xEF\xBC\x9B" && cp != "\xEF\xBC\x9A" && cp != "\xE3\x80\x81" )
+			{
+				if( cp.size() == 1 && cp[ 0 ] >= 'A' && cp[ 0 ] <= 'Z' )
+					result += (char)( cp[ 0 ] + 32 );
+				else
+					result += cp;
+			}
+			offset = next;
+		}
+		return result;
+	}
+
+	struct MergedWdSegment
+	{
+		int64_t begin;
+		int64_t end;
+		std::string text;
+	};
+
+	std::vector<MergedWdSegment> mergeWdSegments( WdBackend& b, WdBackend::Model* m, int count )
+	{
+		std::vector<MergedWdSegment> result;
+		for( int i = 0; i < count; i++ )
+		{
+			const char* rawText = b.segmentText( m, i );
+			while( *rawText == ' ' ) rawText++;
+			std::string text = rawText;
+			if( text.empty() )
+				continue;
+
+			int64_t begin = b.segmentBegin( m, i );
+			int64_t end = b.segmentEnd( m, i );
+			if( end <= begin )
+				end = begin + 80; // 800ms in centiseconds
+
+			if( !result.empty() )
+			{
+				auto& last = result.back();
+				if( getComparisonTextWd( last.text ) == getComparisonTextWd( text ) )
+				{
+					last.end = std::max( last.end, end );
+					continue;
+				}
+			}
+			result.push_back( { begin, end, text } );
+		}
+		return result;
+	}
+
 	void wdWriteTxt( FILE* f, int count, WdBackend& b, WdBackend::Model* m, bool timestamps )
 	{
-		for( int i = 0; i < count; i++ )
+		auto segments = mergeWdSegments( b, m, count );
+		for( const auto& seg : segments )
 		{
 			if( timestamps )
 				fprintf( f, "[%s --> %s]  ",
-					wdTimestamp( b.segmentBegin( m, i ) ).c_str(),
-					wdTimestamp( b.segmentEnd( m, i ) ).c_str() );
-			const char* text = b.segmentText( m, i );
-			while( *text == ' ' ) text++;
-			fprintf( f, "%s\r\n", text );
+					wdTimestamp( seg.begin ).c_str(),
+					wdTimestamp( seg.end ).c_str() );
+			fprintf( f, "%s\r\n", seg.text.c_str() );
 		}
 	}
 
 	void wdWriteSrt( FILE* f, int count, WdBackend& b, WdBackend::Model* m )
 	{
-		for( int i = 0; i < count; i++ )
+		auto segments = mergeWdSegments( b, m, count );
+		for( size_t i = 0; i < segments.size(); i++ )
 		{
-			const char* text = b.segmentText( m, i );
-			while( *text == ' ' ) text++;
-			fprintf( f, "%d\r\n%s --> %s\r\n%s\r\n\r\n",
+			fprintf( f, "%zu\r\n%s --> %s\r\n%s\r\n\r\n",
 				i + 1,
-				wdTimestamp( b.segmentBegin( m, i ), true ).c_str(),
-				wdTimestamp( b.segmentEnd( m, i ), true ).c_str(),
-				text );
+				wdTimestamp( segments[ i ].begin, true ).c_str(),
+				wdTimestamp( segments[ i ].end, true ).c_str(),
+				segments[ i ].text.c_str() );
 		}
 	}
 
 	void wdWriteVtt( FILE* f, int count, WdBackend& b, WdBackend::Model* m )
 	{
 		fprintf( f, "WEBVTT\r\n\r\n" );
-		for( int i = 0; i < count; i++ )
+		auto segments = mergeWdSegments( b, m, count );
+		for( const auto& seg : segments )
 		{
-			const char* text = b.segmentText( m, i );
-			while( *text == ' ' ) text++;
 			fprintf( f, "%s --> %s\r\n%s\r\n\r\n",
-				wdTimestamp( b.segmentBegin( m, i ) ).c_str(),
-				wdTimestamp( b.segmentEnd( m, i ) ).c_str(),
-				text );
+				wdTimestamp( seg.begin ).c_str(),
+				wdTimestamp( seg.end ).c_str(),
+				seg.text.c_str() );
 		}
 	}
 }

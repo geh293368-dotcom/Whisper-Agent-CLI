@@ -53,6 +53,22 @@ namespace
 		require( vtt.find( "WEBVTT\r\n\r\n" ) == 0, "WebVTT header is missing" );
 	}
 
+	void duplicateMergingAndZeroDurationTest()
+	{
+		const std::vector<Subtitle::SourceSegment> source =
+		{
+			{ 0, 100'0000, "Hello world" },
+			{ 150'0000, 150'0000, "Hello world" }, // Zero duration and duplicate
+			{ 300'0000, 310'0000, "Goodbye world" }
+		};
+		const auto cues = Subtitle::build( source );
+		require( cues.size() == 2, "duplicate segments must be merged" );
+		require( cues[ 0 ].text == "Hello world", "merged text must match" );
+		require( cues[ 0 ].begin == 0, "merged start time must be correct" );
+		require( cues[ 0 ].end == 950'0000, "merged end time must incorporate corrected zero-duration segment" );
+		require( cues[ 1 ].text == "Goodbye world", "distinct segment must remain" );
+	}
+
 	void silenceRecoveryTest()
 	{
 		require( Whisper::shouldSkipSilentWindow( false, 10, 3000 ), "empty timestamp loops must skip the window" );
@@ -82,6 +98,7 @@ int main()
 	try
 	{
 		cleanupAndTimelineTest();
+		duplicateMergingAndZeroDurationTest();
 		longChineseSubtitleTest();
 		formatterTest();
 		silenceRecoveryTest();

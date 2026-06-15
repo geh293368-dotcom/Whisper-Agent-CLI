@@ -18,6 +18,17 @@ public static partial class SubtitlePipeline
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
 
+    private static string GetComparisonText(string text)
+    {
+        var sb = new StringBuilder();
+        foreach (char c in text)
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
+    }
+
     public static IReadOnlyList<SubtitleCue> Build(
         IEnumerable<SourceSegment> source,
         SubtitleOptions? options = null)
@@ -27,18 +38,40 @@ public static partial class SubtitlePipeline
         var previousEnd = TimeSpan.Zero - TimeSpan.FromMilliseconds(options.MinimumGapMs);
         int maxCueCharacters = options.MaxCharactersPerLine * Math.Max(1, options.MaxLines);
 
+        var mergedSource = new List<SourceSegment>();
         foreach (SourceSegment segment in source)
         {
             string text = Normalize(segment.Text);
             if (text.Length == 0)
                 continue;
 
-            List<string> chunks = Split(text, maxCueCharacters);
-            TimeSpan sourceBegin = segment.Begin < TimeSpan.Zero ? TimeSpan.Zero : segment.Begin;
-            TimeSpan sourceEnd = segment.End > sourceBegin
+            TimeSpan begin = segment.Begin < TimeSpan.Zero ? TimeSpan.Zero : segment.Begin;
+            TimeSpan end = segment.End > begin
                 ? segment.End
-                : sourceBegin + TimeSpan.FromMilliseconds(options.MinimumDurationMs);
-            double durationMs = Math.Max(options.MinimumDurationMs, (sourceEnd - sourceBegin).TotalMilliseconds);
+                : begin + TimeSpan.FromMilliseconds(options.MinimumDurationMs);
+
+            if (mergedSource.Count > 0)
+            {
+                var last = mergedSource[mergedSource.Count - 1];
+                if (GetComparisonText(last.Text) == GetComparisonText(segment.Text))
+                {
+                    mergedSource[mergedSource.Count - 1] = new SourceSegment(last.Begin, end > last.Begin ? end : last.End, last.Text);
+                    continue;
+                }
+            }
+            mergedSource.Add(new SourceSegment(begin, end, segment.Text));
+        }
+
+        foreach (SourceSegment segment in mergedSource)
+        {
+            string text = Normalize(segment.Text);
+            if (text.Length == 0)
+                continue;
+
+            List<string> chunks = Split(text, maxCueCharacters);
+            TimeSpan sourceBegin = segment.Begin;
+            TimeSpan sourceEnd = segment.End;
+            double durationMs = (sourceEnd - sourceBegin).TotalMilliseconds;
             int totalCharacters = chunks.Sum(c => Math.Max(1, c.EnumerateRunes().Count()));
             int consumed = 0;
 
