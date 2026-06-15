@@ -15,6 +15,8 @@ export interface Job {
   selected: boolean
   status: string
   progress: number
+  durationSeconds?: number
+  elapsedSeconds?: number
   error?: string
   outputPath?: string
 }
@@ -39,6 +41,13 @@ export interface CaptureDevice {
   name: string
 }
 
+export interface LiveSegment {
+  index: number
+  begin: string
+  end: string
+  text: string
+}
+
 export interface AppState {
   engines: Option[]
   languages: Option[]
@@ -54,9 +63,12 @@ export interface AppState {
   modelProgress: number
   outputFolder: string
   globalStatus: string
+  batchStatistics: BatchStatistics
+  isScanningMedia: boolean
   isRunning: boolean
   isLoadingModel: boolean
   canStart: boolean
+  canStartLive: boolean
   jobs: Job[]
   sources: SourceFolder[]
   segments: Segment[]
@@ -65,12 +77,31 @@ export interface AppState {
   captureDevices: CaptureDevice[]
   selectedCaptureDevice?: string
   liveStatus: string
+  isLiveRunning: boolean
+  isLivePreparing: boolean
+  liveVoiceDetected: boolean
+  liveTranscribing: boolean
+  liveStalled: boolean
+  liveModelProgress: number
+  liveElapsedSeconds: number
+  liveSegments: LiveSegment[]
+  liveOutputPath?: string
   recentModels: string[]
 }
 
+export interface BatchStatistics {
+  selectedCount: number
+  knownDurationCount: number
+  totalDurationSeconds: number
+  processedDurationSeconds: number
+  elapsedSeconds: number
+  speed: number
+  etaSeconds?: number
+}
+
 export interface HostMessage {
-  type: 'state' | 'patch' | 'jobUpdate' | 'segmentAdded' | 'logAdded' | 'error'
-  payload: AppState | Partial<AppState> | Job | Segment | { line: string } | { message: string }
+  type: 'state' | 'patch' | 'jobUpdate' | 'segmentAdded' | 'liveSegmentAdded' | 'logAdded' | 'error'
+  payload: AppState | Partial<AppState> | Job | Segment | LiveSegment | { line: string } | { message: string }
 }
 
 export interface DesktopCommand {

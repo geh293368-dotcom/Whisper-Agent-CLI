@@ -58,6 +58,28 @@ WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字�
 
 如果是从源码运行，而不是直接使用 `Releases` 中的程序，建议按下面顺序操作。
 
+### 每日构建包
+
+需要生成一个可直接解压运行、并且能够按日期回退的版本时，在仓库根目录运行：
+
+```powershell
+Tools\package-daily.cmd
+```
+
+脚本会先执行 `Release / x64` 编译，然后输出：
+
+```text
+Releases\Daily\2026-06-13\WhisperDesktop\
+Releases\Daily\2026-06-13\WhisperDesktop-2026-06-13-win-x64.zip
+```
+
+同一天重复执行会更新当天的包，不会产生按小时命名的多个版本。每个包内的
+`BUILD-INFO.txt` 会记录构建日期、Git 分支、提交号以及构建时是否存在未提交修改。
+每日构建使用独立的临时输出目录，因此正在运行的客户端不会锁住打包所需文件。
+如需重新整理已有编译结果而不再次编译，可以运行
+`Tools\package-daily.cmd -SkipBuild`。每日包为免安装的便携版，目标电脑需要安装
+.NET 9 Desktop Runtime。
+
 ### 前置条件
 
 - **Visual Studio 2022**（v143 工具链，含 C++ 桌面开发）

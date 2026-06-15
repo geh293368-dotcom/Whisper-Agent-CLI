@@ -44,3 +44,16 @@ public sealed record SubtitlePreviewItem(
 }
 
 public sealed record CaptureDeviceOption(string Name, string Endpoint);
+
+public sealed record LiveSubtitleItem(
+    int Index,
+    TimeSpan Begin,
+    TimeSpan End,
+    string Text)
+{
+    public string BeginText => Format(Begin);
+    public string EndText => Format(End);
+
+    static string Format(TimeSpan value) =>
+        $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}.{value.Milliseconds:000}";
+}

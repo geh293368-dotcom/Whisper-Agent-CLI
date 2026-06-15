@@ -49,10 +49,14 @@ const mockState: AppState = {
   selectedEngine: 'cuda', selectedLanguage: 'zh', selectedFormat: 'srt', selectedOutputLocation: 'selected',
   translate: false, modelPath: '', modelStatus: '尚未加载模型', modelProgress: 0,
   outputFolder: 'C:\\Users\\Public\\Documents', globalStatus: '浏览器预览模式',
+  isScanningMedia: false,
+  batchStatistics: { selectedCount: 0, knownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0 },
   isRunning: false, isLoadingModel: false, canStart: false, jobs: [], sources: [], segments: [], logs: '',
   logFilePath: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\Logs\\whisper-desktop.log',
   captureDevices: [{ id: 'default', name: '默认麦克风' }], selectedCaptureDevice: 'default',
   liveStatus: '浏览器预览不读取本机录音设备',
+  canStartLive: true, isLiveRunning: false, isLivePreparing: false, liveVoiceDetected: false,
+  liveTranscribing: false, liveStalled: false, liveModelProgress: 0, liveElapsedSeconds: 0, liveSegments: [],
   recentModels: [],
 }
 
@@ -65,16 +69,18 @@ class BrowserMockBridge implements DesktopBridge {
     } else if (action === 'addFiles') {
       mockState.jobs = Array.from({ length: 14 }, (_, index) => ({
         id: `mock-${index}`, fileName: `示例视频-${index + 1}.mp4`, inputPath: `D:\\Media\\课程\\示例视频-${index + 1}.mp4`,
-        relativePath: `课程\\示例视频-${index + 1}.mp4`, sourceRoot: 'D:\\Media', selected: true, status: '等待中', progress: 0,
+        relativePath: `课程\\示例视频-${index + 1}.mp4`, sourceRoot: 'D:\\Media', selected: true, status: '等待中', progress: 0, durationSeconds: 900 + index * 75,
       }))
       mockState.sources = [{ path: 'D:\\Media', name: 'Media', fileCount: 14, selected: true }]
       mockState.globalStatus = '14 个文件，已选择 14 个'
+      mockState.batchStatistics = { selectedCount: 14, knownDurationCount: 14, totalDurationSeconds: 19425, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0 }
       mockState.canStart = true
       this.publish()
     } else if (action === 'start') {
       mockState.isRunning = true
       mockState.canStart = false
       mockState.globalStatus = '正在处理 示例视频-1.mp4'
+      mockState.batchStatistics = { ...mockState.batchStatistics, processedDurationSeconds: 414, elapsedSeconds: 31, speed: 13.4, etaSeconds: 1419 }
       mockState.jobs = mockState.jobs.map((job, index) => ({ ...job, status: index === 0 ? '转录中' : '等待中', progress: index === 0 ? .46 : 0 }))
       mockState.segments = Array.from({ length: 9 }, (_, index) => ({
         index: index + 1, fileName: '示例视频-1.mp4', begin: `00:00:${String(index * 3).padStart(2, '0')}.000`,
@@ -88,6 +94,24 @@ class BrowserMockBridge implements DesktopBridge {
       this.emit({ type: 'jobUpdate', payload: structuredClone(mockState.jobs[0]) })
       mockState.segments.forEach(segment => this.emit({ type: 'segmentAdded', payload: structuredClone(segment) }))
       this.emit({ type: 'logAdded', payload: { line: mockState.logs } })
+    } else if (action === 'startLive') {
+      mockState.isLiveRunning = true
+      mockState.canStartLive = false
+      mockState.liveStatus = '正在聆听'
+      mockState.liveElapsedSeconds = 18
+      mockState.liveSegments = [
+        { index: 1, begin: '00:00:03.200', end: '00:00:07.800', text: '这是实时字幕界面的预览内容。' },
+        { index: 2, begin: '00:00:09.100', end: '00:00:14.600', text: '停顿后会把这一句话确认为最终字幕。' },
+      ]
+      this.publish()
+    } else if (action === 'stopLive') {
+      mockState.isLiveRunning = false
+      mockState.canStartLive = true
+      mockState.liveStatus = '实时字幕已停止'
+      this.publish()
+    } else if (action === 'clearLiveSegments') {
+      mockState.liveSegments = []
+      this.publish()
     }
   }
 

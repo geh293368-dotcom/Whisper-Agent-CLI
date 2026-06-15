@@ -26,7 +26,9 @@ exit /b 0
 set "BUILD=%SOURCE%\build-%~1"
 set "CUDA_ARGS="
 if /i "%~2"=="ON" set "CUDA_ARGS=-DCMAKE_CUDA_ARCHITECTURES=89"
-"%CMAKE%" -Wno-deprecated -S "%SOURCE%" -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA%" -DWD_ENABLE_CUDA=%~2 -DWD_OUTPUT_NAME=%~3 %CUDA_ARGS% || exit /b 1
+rem Refresh CMake's toolchain cache so an older Visual Studio installation cannot
+rem be mixed with headers from the currently selected installation.
+"%CMAKE%" --fresh -Wno-deprecated -S "%SOURCE%" -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA%" -DWD_ENABLE_CUDA=%~2 -DWD_OUTPUT_NAME=%~3 %CUDA_ARGS% || exit /b 1
 "%CMAKE%" --build "%BUILD%" --target WhisperCppBackend || exit /b 1
 echo Built %BUILD%\bin\%~3.dll
 exit /b 0

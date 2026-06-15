@@ -3,8 +3,10 @@ using Microsoft.Win32;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Threading;
 using Whisper;
 using WhisperDesktop.Modern.Models;
 using WhisperDesktop.Modern.Services;
@@ -36,6 +38,7 @@ public partial class MainWindow : Window
     readonly List<TranscriptionJob> jobs = [];
     readonly List<SourceFolderItem> sourceFolders = [];
     readonly List<SubtitlePreviewItem> previewSegments = [];
+    readonly List<LiveSubtitleItem> liveSegments = [];
     readonly List<CaptureDeviceOption> captureDevices = [];
     readonly IReadOnlyList<EngineOption> engines;
     readonly IReadOnlyList<LanguageOption> languages;
@@ -45,6 +48,10 @@ public partial class MainWindow : Window
     ITranscriptionEngine transcription;
     iMediaFoundation? captureMediaFoundation;
     CancellationTokenSource? operationCancellation;
+    CancellationTokenSource? durationScanCancellation;
+    CancellationTokenSource? liveCancellation;
+    readonly LiveTranscriptionService liveTranscription = new();
+    readonly DispatcherTimer liveTimer;
     string modelPath = string.Empty;
     string outputFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     string modelStatus = "尚未加载模型";
@@ -55,12 +62,23 @@ public partial class MainWindow : Window
     double modelProgress;
     bool isRunning;
     bool isLoadingModel;
+    bool isScanningMedia;
+    bool isLiveRunning;
+    bool isLivePreparing;
+    bool liveVoiceDetected;
+    bool liveTranscribing;
+    bool liveStalled;
     bool translate;
+    Stopwatch? batchStopwatch;
+    Stopwatch? liveStopwatch;
+    double liveModelProgress;
+    string? liveOutputPath;
     EngineOption selectedEngine;
     LanguageOption selectedLanguage;
     OutputFormatOption selectedOutputFormat;
     OutputLocationOption selectedOutputLocation;
     CaptureDeviceOption? selectedCaptureDevice;
+    string? selectedCaptureEndpoint;
     List<string> recentModels = [];
 
     public MainWindow()
@@ -97,6 +115,9 @@ public partial class MainWindow : Window
         selectedLanguage = languages[0];
         selectedOutputFormat = outputFormats[0];
         selectedOutputLocation = outputLocations[0];
+
+        liveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        liveTimer.Tick += (_, _) => SendPatch(new { liveElapsedSeconds = liveStopwatch?.Elapsed.TotalSeconds ?? 0 });
 
         LoadConfig();
         transcription = selectedEngine.Create();
@@ -157,8 +178,8 @@ public partial class MainWindow : Window
             case "initialize": PublishState(); break;
             case "chooseModel": ChooseModel(); break;
             case "loadModel": await LoadModelAsync(); break;
-            case "addFiles": AddFiles(); break;
-            case "addFolder": AddFolder(); break;
+            case "addFiles": await AddFilesAsync(); break;
+            case "addFolder": await AddFolderAsync(); break;
             case "chooseOutputFolder": ChooseOutputFolder(); break;
             case "setJobSelected": SetJobSelected(command.Payload); break;
             case "setSourceSelected": SetSourceSelected(command.Payload); break;
@@ -169,6 +190,10 @@ public partial class MainWindow : Window
             case "start": await StartTranscriptionAsync(); break;
             case "stop": StopTranscription(); break;
             case "refreshDevices": RefreshCaptureDevices(); break;
+            case "startLive": StartLiveTranscription(); break;
+            case "stopLive": StopLiveTranscription(); break;
+            case "clearLiveSegments": ClearLiveSegments(); break;
+            case "exportLive": ExportLiveSegments(command.Payload); break;
             case "openLogFolder": OpenLogFolder(); break;
         }
     }
@@ -192,7 +217,7 @@ public partial class MainWindow : Window
 
     async Task LoadModelAsync()
     {
-        if (!File.Exists(modelPath) || isLoadingModel || isRunning)
+        if (!File.Exists(modelPath) || isLoadingModel || isRunning || isLiveRunning || isLivePreparing)
             return;
 
         operationCancellation?.Dispose();
@@ -234,8 +259,10 @@ public partial class MainWindow : Window
         }
     }
 
-    void AddFiles()
+    async Task AddFilesAsync()
     {
+        if (isScanningMedia)
+            return;
         var dialog = new OpenFileDialog
         {
             Title = "添加音频或视频文件",
@@ -245,40 +272,116 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog(this) != true)
             return;
+        var added = new List<TranscriptionJob>();
         foreach (string path in dialog.FileNames)
-            AddJob(path, Path.GetDirectoryName(path));
+        {
+            TranscriptionJob? job = AddJob(path, Path.GetDirectoryName(path));
+            if (job is not null)
+                added.Add(job);
+        }
+        RebuildSources();
         QueueChanged();
+        await ProbeDurationsAsync(added);
     }
 
-    void AddFolder()
+    async Task AddFolderAsync()
     {
+        if (isScanningMedia)
+            return;
         var dialog = new OpenFolderDialog { Title = "选择要递归扫描的媒体目录" };
         if (dialog.ShowDialog(this) != true)
             return;
 
         string root = dialog.FolderName;
         int before = jobs.Count;
+        var added = new List<TranscriptionJob>();
         try
         {
             foreach (string path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
                 .Where(path => SupportedExtensions.Contains(Path.GetExtension(path))))
-                AddJob(path, root);
+            {
+                TranscriptionJob? job = AddJob(path, root);
+                if (job is not null)
+                    added.Add(job);
+            }
         }
         catch (UnauthorizedAccessException ex)
         {
             AppendLog("扫描", $"部分目录无法访问：{ex.Message}");
         }
-        QueueChanged();
+        RebuildSources();
         globalStatus = $"从 {root} 添加了 {jobs.Count - before} 个媒体文件";
         PublishState();
+        await ProbeDurationsAsync(added);
     }
 
-    void AddJob(string path, string? sourceRoot)
+    TranscriptionJob? AddJob(string path, string? sourceRoot)
     {
         if (jobs.Any(job => string.Equals(job.InputPath, path, StringComparison.OrdinalIgnoreCase)))
+            return null;
+        var job = new TranscriptionJob { InputPath = path, SourceRoot = sourceRoot };
+        jobs.Add(job);
+        return job;
+    }
+
+    async Task ProbeDurationsAsync(IReadOnlyList<TranscriptionJob> addedJobs)
+    {
+        if (addedJobs.Count == 0)
             return;
-        jobs.Add(new TranscriptionJob { InputPath = path, SourceRoot = sourceRoot });
-        RebuildSources();
+
+        isScanningMedia = true;
+        durationScanCancellation?.Dispose();
+        durationScanCancellation = new CancellationTokenSource();
+        CancellationToken cancellationToken = durationScanCancellation.Token;
+        globalStatus = $"正在读取媒体时长：0 / {addedJobs.Count}";
+        PublishState();
+
+        try
+        {
+            await Task.Run(async () =>
+            {
+                using iMediaFoundation mediaFoundation = Library.initMediaFoundation();
+                for (int index = 0; index < addedJobs.Count; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    TranscriptionJob job = addedJobs[index];
+                    TimeSpan? duration = null;
+                    Exception? failure = null;
+                    try
+                    {
+                        using iAudioReader reader = mediaFoundation.openAudioFile(job.InputPath);
+                        duration = reader.getDuration();
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                    }
+
+                    int completed = index + 1;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        job.Duration = duration;
+                        if (failure is not null)
+                            AppendLog(job.FileName, "无法读取媒体时长，ETA 将忽略此文件", failure, "WARN");
+                        globalStatus = $"正在读取媒体时长：{completed} / {addedJobs.Count}";
+                        SendJobUpdate(job);
+                        SendPatch(new { globalStatus, batchStatistics = CreateBatchStatistics() });
+                    });
+                }
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            globalStatus = "媒体时长读取已取消";
+        }
+        finally
+        {
+            isScanningMedia = false;
+            durationScanCancellation?.Dispose();
+            durationScanCancellation = null;
+            QueueChanged();
+        }
     }
 
     void SetJobSelected(JsonElement payload)
@@ -364,16 +467,31 @@ public partial class MainWindow : Window
         {
             case "engine": SwitchEngine(value.GetString()); break;
             case "language":
-                selectedLanguage = languages.FirstOrDefault(item => item.Id == value.GetString()) ?? selectedLanguage;
-                if (selectedLanguage.Id == "en") translate = false;
+                if (!isRunning && !isLiveRunning && !isLivePreparing)
+                {
+                    selectedLanguage = languages.FirstOrDefault(item => item.Id == value.GetString()) ?? selectedLanguage;
+                    if (selectedLanguage.Id == "en") translate = false;
+                }
                 break;
             case "format": selectedOutputFormat = outputFormats.FirstOrDefault(item => item.Id == value.GetString()) ?? selectedOutputFormat; break;
             case "outputLocation": selectedOutputLocation = outputLocations.FirstOrDefault(item => item.Id == value.GetString()) ?? selectedOutputLocation; break;
-            case "translate": translate = value.GetBoolean() && selectedLanguage.Id != "en"; break;
-            case "captureDevice": selectedCaptureDevice = captureDevices.FirstOrDefault(item => item.Endpoint == value.GetString()); break;
+            case "translate":
+                if (!isRunning && !isLiveRunning && !isLivePreparing)
+                    translate = value.GetBoolean() && selectedLanguage.Id != "en";
+                break;
+            case "captureDevice":
+                if (!isLiveRunning && !isLivePreparing)
+                {
+                    selectedCaptureDevice = captureDevices.FirstOrDefault(item => item.Endpoint == value.GetString());
+                    selectedCaptureEndpoint = selectedCaptureDevice?.Endpoint;
+                }
+                break;
             case "modelPath":
-                modelPath = value.GetString() ?? string.Empty;
-                AddToRecentModels(modelPath);
+                if (!isRunning && !isLoadingModel && !isLiveRunning && !isLivePreparing)
+                {
+                    modelPath = value.GetString() ?? string.Empty;
+                    AddToRecentModels(modelPath);
+                }
                 break;
         }
         SaveConfig();
@@ -383,7 +501,7 @@ public partial class MainWindow : Window
     void SwitchEngine(string? id)
     {
         EngineOption? next = engines.FirstOrDefault(item => item.Id == id);
-        if (next is null || next == selectedEngine || isRunning || isLoadingModel)
+        if (next is null || next == selectedEngine || isRunning || isLoadingModel || isLiveRunning || isLivePreparing)
             return;
         transcription.Dispose();
         selectedEngine = next;
@@ -406,20 +524,34 @@ public partial class MainWindow : Window
         operationCancellation?.Dispose();
         operationCancellation = new CancellationTokenSource();
         isRunning = true;
+        batchStopwatch = Stopwatch.StartNew();
         previewSegments.Clear();
         int completed = 0;
         int failed = 0;
+        TranscriptionJob[] selectedJobs = jobs.Where(job => job.IsSelected).ToArray();
+        foreach (TranscriptionJob job in selectedJobs)
+        {
+            job.Elapsed = null;
+            if (job.State is JobState.Completed or JobState.Failed or JobState.Canceled)
+            {
+                job.State = JobState.Pending;
+                job.StatusText = "等待中";
+                job.Progress = 0;
+            }
+        }
+        AppendLog("批次", $"开始转录：{selectedJobs.Length} 个文件，总时长 {FormatDuration(TimeSpan.FromSeconds(selectedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0)))}");
         SendPatch(new
         {
             isRunning,
             canStart = CanStart,
             segments = Array.Empty<object>(),
             globalStatus,
+            batchStatistics = CreateBatchStatistics(),
         });
 
         try
         {
-            foreach (TranscriptionJob job in jobs.Where(job => job.IsSelected).ToArray())
+            foreach (TranscriptionJob job in selectedJobs)
             {
                 operationCancellation.Token.ThrowIfCancellationRequested();
                 job.State = JobState.Running;
@@ -428,8 +560,9 @@ public partial class MainWindow : Window
                 job.Error = null;
                 globalStatus = $"正在处理 {job.FileName}";
                 int segmentIndex = 0;
+                Stopwatch jobStopwatch = Stopwatch.StartNew();
                 SendJobUpdate(job);
-                SendPatch(new { globalStatus, canStart = CanStart });
+                SendPatch(new { globalStatus, canStart = CanStart, batchStatistics = CreateBatchStatistics() });
 
                 DateTime lastProgressUpdate = DateTime.MinValue;
                 var progress = new Progress<double>(value =>
@@ -440,6 +573,7 @@ public partial class MainWindow : Window
                     {
                         lastProgressUpdate = now;
                         SendJobUpdate(job);
+                        SendPatch(new { batchStatistics = CreateBatchStatistics() });
                     }
                 });
                 try
@@ -459,12 +593,15 @@ public partial class MainWindow : Window
                     job.State = JobState.Completed;
                     job.StatusText = "完成";
                     completed++;
-                    AppendLog(job.FileName, $"已输出到 {job.OutputPath}");
                 }
                 catch (OperationCanceledException)
                 {
                     job.State = JobState.Canceled;
                     job.StatusText = "已取消";
+                    jobStopwatch.Stop();
+                    job.Elapsed = jobStopwatch.Elapsed;
+                    SendJobUpdate(job);
+                    SendPatch(new { batchStatistics = CreateBatchStatistics() });
                     throw;
                 }
                 catch (Exception ex)
@@ -475,7 +612,22 @@ public partial class MainWindow : Window
                     failed++;
                     AppendLog(job.FileName, "转录失败", ex, "ERROR");
                 }
+                finally
+                {
+                    jobStopwatch.Stop();
+                    job.Elapsed = jobStopwatch.Elapsed;
+                }
+                if (job.State == JobState.Completed)
+                {
+                    TimeSpan elapsed = job.Elapsed ?? TimeSpan.Zero;
+                    double speed = elapsed.TotalSeconds > 0 && job.Duration is not null
+                        ? job.Duration.Value.TotalSeconds / elapsed.TotalSeconds
+                        : 0;
+                    AppendLog(job.FileName,
+                        $"已输出到 {job.OutputPath}；视频时长 {FormatDuration(job.Duration)}；耗时 {FormatDuration(job.Elapsed)}；速度 {(speed > 0 ? $"{speed:F1}x" : "未知")}");
+                }
                 SendJobUpdate(job);
+                SendPatch(new { batchStatistics = CreateBatchStatistics() });
             }
             globalStatus = $"批量转录完成：成功 {completed}，失败 {failed}";
         }
@@ -485,8 +637,11 @@ public partial class MainWindow : Window
         }
         finally
         {
+            batchStopwatch?.Stop();
             isRunning = false;
-            SendPatch(new { isRunning, globalStatus, canStart = CanStart });
+            object statistics = CreateBatchStatistics();
+            AppendLog("批次", $"{globalStatus}；{FormatBatchSummary()}");
+            SendPatch(new { isRunning, globalStatus, canStart = CanStart, batchStatistics = statistics });
         }
     }
 
@@ -506,15 +661,227 @@ public partial class MainWindow : Window
         SendPatch(new { globalStatus });
     }
 
+    void StartLiveTranscription()
+    {
+        if (!CanStartLive)
+        {
+            SendError(!transcription.IsModelLoaded
+                ? "请先在“模型与设置”中加载模型。"
+                : "请选择可用的麦克风后再开始实时字幕。");
+            return;
+        }
+
+        liveCancellation?.Dispose();
+        liveCancellation = new CancellationTokenSource();
+        liveSegments.Clear();
+        liveOutputPath = null;
+        liveModelProgress = 0;
+        liveVoiceDetected = false;
+        liveTranscribing = false;
+        liveStalled = false;
+        isLivePreparing = true;
+        isLiveRunning = true;
+        liveStatus = "正在准备实时识别模型...";
+        liveStopwatch = Stopwatch.StartNew();
+        liveTimer.Start();
+
+        CaptureDeviceOption device = selectedCaptureDevice!;
+        AppendLog("实时字幕", $"会话开始：设备 {device.Name}；语言 {selectedLanguage.Id}；模式 均衡");
+        SendPatch(new
+        {
+            isLiveRunning,
+            isLivePreparing,
+            canStart = CanStart,
+            canStartLive = CanStartLive,
+            liveStatus,
+            liveModelProgress,
+            liveElapsedSeconds = 0,
+            liveVoiceDetected,
+            liveTranscribing,
+            liveStalled,
+            liveSegments = Array.Empty<object>(),
+            liveOutputPath,
+        });
+
+        _ = RunLiveTranscriptionAsync(device, liveCancellation.Token);
+    }
+
+    async Task RunLiveTranscriptionAsync(CaptureDeviceOption device, CancellationToken cancellationToken)
+    {
+        int errors = 0;
+        try
+        {
+            var progress = new Progress<double>(value =>
+            {
+                liveModelProgress = value;
+                SendPatch(new { liveModelProgress });
+            });
+
+            await liveTranscription.RunAsync(
+                modelPath,
+                device.Endpoint,
+                selectedLanguage.Value,
+                translate,
+                progress,
+                status => Dispatcher.BeginInvoke(() => UpdateLiveCaptureStatus(status)),
+                segment => Dispatcher.BeginInvoke(() => AddLiveSegment(segment)),
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            liveStatus = "实时字幕已停止";
+        }
+        catch (Exception ex)
+        {
+            errors++;
+            liveStatus = $"实时字幕失败：{ex.Message}";
+            AppendLog("实时字幕", "实时字幕会话失败", ex, "ERROR");
+            SendError(ex.Message);
+        }
+        finally
+        {
+            liveStopwatch?.Stop();
+            liveTimer.Stop();
+            isLiveRunning = false;
+            isLivePreparing = false;
+            liveVoiceDetected = false;
+            liveTranscribing = false;
+            liveStalled = false;
+            TimeSpan elapsed = liveStopwatch?.Elapsed ?? TimeSpan.Zero;
+            AppendLog("实时字幕", $"会话结束：时长 {FormatDuration(elapsed)}；字幕 {liveSegments.Count} 条；错误 {errors}");
+            SendPatch(new
+            {
+                isLiveRunning,
+                isLivePreparing,
+                canStart = CanStart,
+                canStartLive = CanStartLive,
+                liveStatus,
+                liveElapsedSeconds = elapsed.TotalSeconds,
+                liveVoiceDetected,
+                liveTranscribing,
+                liveStalled,
+            });
+        }
+    }
+
+    void UpdateLiveCaptureStatus(eCaptureStatus status)
+    {
+        isLivePreparing = false;
+        liveVoiceDetected = status.HasFlag(eCaptureStatus.Voice);
+        liveTranscribing = status.HasFlag(eCaptureStatus.Transcribing);
+        liveStalled = status.HasFlag(eCaptureStatus.Stalled);
+        liveStatus = liveStalled
+            ? "处理速度不足，部分音频可能被跳过"
+            : liveTranscribing && liveVoiceDetected
+                ? "正在识别，同时继续聆听"
+                : liveTranscribing
+                    ? "正在识别刚才的语音"
+                    : liveVoiceDetected
+                        ? "检测到说话，正在收集语音"
+                        : "正在聆听";
+
+        SendPatch(new
+        {
+            isLivePreparing,
+            liveStatus,
+            liveVoiceDetected,
+            liveTranscribing,
+            liveStalled,
+            liveModelProgress = 1,
+        });
+    }
+
+    void AddLiveSegment(LiveTranscriptionSegment segment)
+    {
+        if (string.IsNullOrWhiteSpace(segment.Text))
+            return;
+
+        var item = new LiveSubtitleItem(liveSegments.Count + 1, segment.Begin, segment.End, segment.Text);
+        liveSegments.Add(item);
+        SendMessage(new
+        {
+            type = "liveSegmentAdded",
+            payload = SerializeLiveSegment(item),
+        });
+    }
+
+    void StopLiveTranscription()
+    {
+        if (!isLiveRunning)
+            return;
+        liveStatus = "正在停止实时字幕...";
+        liveCancellation?.Cancel();
+        SendPatch(new { liveStatus });
+    }
+
+    void ClearLiveSegments()
+    {
+        liveSegments.Clear();
+        liveOutputPath = null;
+        SendPatch(new { liveSegments = Array.Empty<object>(), liveOutputPath });
+    }
+
+    void ExportLiveSegments(JsonElement payload)
+    {
+        if (liveSegments.Count == 0)
+        {
+            SendError("当前没有可以导出的实时字幕。");
+            return;
+        }
+
+        string format = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("format", out JsonElement value)
+            ? value.GetString() ?? "srt"
+            : "srt";
+        bool srt = string.Equals(format, "srt", StringComparison.OrdinalIgnoreCase);
+        var dialog = new SaveFileDialog
+        {
+            Title = "导出实时字幕",
+            Filter = srt ? "SubRip 字幕 (*.srt)|*.srt" : "文本文件 (*.txt)|*.txt",
+            DefaultExt = srt ? ".srt" : ".txt",
+            FileName = $"实时字幕-{DateTime.Now:yyyyMMdd-HHmmss}.{(srt ? "srt" : "txt")}",
+            InitialDirectory = Directory.Exists(outputFolder) ? outputFolder : null,
+        };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var builder = new StringBuilder();
+        foreach (LiveSubtitleItem segment in liveSegments)
+        {
+            if (srt)
+            {
+                builder.AppendLine(segment.Index.ToString());
+                builder.Append(FormatSrtTime(segment.Begin)).Append(" --> ").AppendLine(FormatSrtTime(segment.End));
+                builder.AppendLine(segment.Text).AppendLine();
+            }
+            else
+            {
+                builder.Append('[').Append(segment.BeginText).Append("] ").AppendLine(segment.Text);
+            }
+        }
+
+        File.WriteAllText(dialog.FileName, builder.ToString(), new UTF8Encoding(false));
+        liveOutputPath = dialog.FileName;
+        AppendLog("实时字幕", $"已导出到 {liveOutputPath}");
+        SendPatch(new { liveOutputPath });
+    }
+
+    static string FormatSrtTime(TimeSpan value) =>
+        $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00},{value.Milliseconds:000}";
+
     void RefreshCaptureDevices()
     {
+        if (isLiveRunning || isLivePreparing)
+            return;
         try
         {
             captureMediaFoundation ??= Library.initMediaFoundation();
             CaptureDeviceId[] devices = captureMediaFoundation.listCaptureDevices() ?? [];
+            string? previousEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint;
             captureDevices.Clear();
             captureDevices.AddRange(devices.Select(device => new CaptureDeviceOption(device.displayName, device.endpoint)));
-            selectedCaptureDevice = captureDevices.FirstOrDefault();
+            selectedCaptureDevice = captureDevices.FirstOrDefault(device => device.Endpoint == previousEndpoint)
+                ?? captureDevices.FirstOrDefault();
+            selectedCaptureEndpoint = selectedCaptureDevice?.Endpoint;
             liveStatus = devices.Length == 0 ? "未发现可用麦克风" : $"已发现 {devices.Length} 个录音设备";
         }
         catch (Exception ex)
@@ -527,11 +894,78 @@ public partial class MainWindow : Window
 
     void QueueChanged()
     {
+        if (!isRunning)
+            batchStopwatch = null;
         globalStatus = $"{jobs.Count} 个文件，已选择 {jobs.Count(job => job.IsSelected)} 个";
         PublishState();
     }
 
-    bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected) && !isRunning && !isLoadingModel;
+    bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning;
+
+    bool CanStartLive => transcription.IsModelLoaded
+        && File.Exists(modelPath)
+        && selectedCaptureDevice is not null
+        && !isRunning
+        && !isLoadingModel
+        && !isScanningMedia
+        && !isLiveRunning
+        && !isLivePreparing;
+
+    object CreateBatchStatistics()
+    {
+        TranscriptionJob[] selected = jobs.Where(job => job.IsSelected).ToArray();
+        int knownDurationCount = selected.Count(job => job.Duration is not null);
+        double totalDurationSeconds = selected.Sum(job => job.Duration?.TotalSeconds ?? 0);
+        double processedDurationSeconds = batchStopwatch is null
+            ? 0
+            : selected.Sum(job => job.State switch
+            {
+                JobState.Completed => job.Duration?.TotalSeconds ?? 0,
+                JobState.Running => (job.Duration?.TotalSeconds ?? 0) * Math.Clamp(job.Progress, 0, 1),
+                _ => 0,
+            });
+        double remainingDurationSeconds = selected.Sum(job => job.State switch
+        {
+            JobState.Pending => job.Duration?.TotalSeconds ?? 0,
+            JobState.Running => (job.Duration?.TotalSeconds ?? 0) * (1 - Math.Clamp(job.Progress, 0, 1)),
+            _ => 0,
+        });
+        double elapsedSeconds = batchStopwatch?.Elapsed.TotalSeconds ?? 0;
+        double speed = elapsedSeconds > 0 ? processedDurationSeconds / elapsedSeconds : 0;
+        double? etaSeconds = isRunning && knownDurationCount == selected.Length && speed > 0
+            ? remainingDurationSeconds / speed
+            : null;
+
+        return new
+        {
+            selectedCount = selected.Length,
+            knownDurationCount,
+            totalDurationSeconds,
+            processedDurationSeconds,
+            elapsedSeconds,
+            speed,
+            etaSeconds,
+        };
+    }
+
+    string FormatBatchSummary()
+    {
+        TranscriptionJob[] completed = jobs.Where(job => job.IsSelected && job.State == JobState.Completed).ToArray();
+        TimeSpan elapsed = batchStopwatch?.Elapsed ?? TimeSpan.Zero;
+        TimeSpan processed = TimeSpan.FromSeconds(completed.Sum(job => job.Duration?.TotalSeconds ?? 0));
+        double speed = elapsed.TotalSeconds > 0 ? processed.TotalSeconds / elapsed.TotalSeconds : 0;
+        return $"完成音频 {FormatDuration(processed)}；总耗时 {FormatDuration(elapsed)}；平均速度 {(speed > 0 ? $"{speed:F1}x" : "未知")}";
+    }
+
+    static string FormatDuration(TimeSpan? value)
+    {
+        if (value is null)
+            return "未知";
+        TimeSpan duration = value.Value;
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}"
+            : $"{duration.Minutes:00}:{duration.Seconds:00}";
+    }
 
     void AppendLog(string source, string text, Exception? exception = null, string level = "INFO")
     {
@@ -571,9 +1005,12 @@ public partial class MainWindow : Window
             modelProgress,
             outputFolder,
             globalStatus,
+            batchStatistics = CreateBatchStatistics(),
+            isScanningMedia,
             isRunning,
             isLoadingModel,
             canStart = CanStart,
+            canStartLive = CanStartLive,
             jobs = jobs.Select(SerializeJob),
             sources = sourceFolders.Select(source => new
             {
@@ -588,6 +1025,15 @@ public partial class MainWindow : Window
             captureDevices = captureDevices.Select(device => new { id = device.Endpoint, name = device.Name }),
             selectedCaptureDevice = selectedCaptureDevice?.Endpoint,
             liveStatus,
+            isLiveRunning,
+            isLivePreparing,
+            liveVoiceDetected,
+            liveTranscribing,
+            liveStalled,
+            liveModelProgress,
+            liveElapsedSeconds = liveStopwatch?.Elapsed.TotalSeconds ?? 0,
+            liveSegments = liveSegments.Select(SerializeLiveSegment),
+            liveOutputPath,
             recentModels = recentModels.ToArray(),
         };
         SendMessage(new { type = "state", payload = state });
@@ -626,8 +1072,18 @@ public partial class MainWindow : Window
         selected = job.IsSelected,
         status = job.StatusText,
         job.Progress,
+        durationSeconds = job.Duration?.TotalSeconds,
+        elapsedSeconds = job.Elapsed?.TotalSeconds,
         job.Error,
         job.OutputPath,
+    };
+
+    static object SerializeLiveSegment(LiveSubtitleItem segment) => new
+    {
+        segment.Index,
+        begin = segment.BeginText,
+        end = segment.EndText,
+        segment.Text,
     };
 
     void SendMessage(object message)
@@ -638,16 +1094,19 @@ public partial class MainWindow : Window
 
     void OnWindowClosing(object? sender, CancelEventArgs e)
     {
-        if (isRunning || isLoadingModel)
+        if (isRunning || isLoadingModel || isScanningMedia || isLiveRunning || isLivePreparing)
         {
-            MessageBoxResult result = MessageBox.Show(this, "模型或转录任务仍在运行，确定要退出吗？", "确认退出", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            MessageBoxResult result = MessageBox.Show(this, "模型、媒体扫描、批量任务或实时字幕仍在运行，确定要退出吗？", "确认退出", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result == MessageBoxResult.No)
             {
                 e.Cancel = true;
                 return;
             }
             operationCancellation?.Cancel();
+            durationScanCancellation?.Cancel();
+            liveCancellation?.Cancel();
         }
+        liveTimer.Stop();
         transcription.Dispose();
         captureMediaFoundation?.Dispose();
     }
@@ -685,6 +1144,7 @@ public partial class MainWindow : Window
                     translate = config.Translate;
                     modelPath = config.ModelPath;
                     recentModels = config.RecentModels ?? new();
+                    selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
                 }
             }
         }
@@ -714,6 +1174,7 @@ public partial class MainWindow : Window
                 Translate = translate,
                 ModelPath = modelPath,
                 RecentModels = recentModels,
+                SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
             };
 
             string json = JsonSerializer.Serialize(config, JsonOptions);
@@ -735,6 +1196,7 @@ public partial class MainWindow : Window
         public bool Translate { get; set; } = false;
         public string ModelPath { get; set; } = string.Empty;
         public List<string> RecentModels { get; set; } = new();
+        public string? SelectedCaptureEndpoint { get; set; }
     }
 
     sealed record HostCommand(string Action, JsonElement Payload);

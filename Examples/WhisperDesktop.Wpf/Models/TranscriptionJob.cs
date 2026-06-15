@@ -30,6 +30,8 @@ public sealed class TranscriptionJob : INotifyPropertyChanged
         ? FileName
         : Path.GetRelativePath(SourceRoot, InputPath);
     public string? OutputPath { get; set; }
+    public TimeSpan? Duration { get; set; }
+    public TimeSpan? Elapsed { get; set; }
 
     public bool IsSelected
     {

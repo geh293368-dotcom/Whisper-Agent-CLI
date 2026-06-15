@@ -43,3 +43,4 @@ Native/WhisperCppBackend/build-cpu/
 Native/WhisperCppBackend/build-cuda/
 .tmp/
 chrome_start.log
+Releases/
