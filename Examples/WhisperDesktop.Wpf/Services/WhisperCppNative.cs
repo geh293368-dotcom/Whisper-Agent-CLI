@@ -31,6 +31,7 @@ sealed class WhisperCppNative : IDisposable
         int sampleCount,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string language,
         int translate,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? initialPrompt,
         ProgressCallback progress,
         SegmentCallback segment,
         CancelCallback cancel,
@@ -88,11 +89,12 @@ sealed class WhisperCppNative : IDisposable
         int sampleCount,
         string language,
         bool translate,
+        string? initialPrompt,
         ProgressCallback progress,
         SegmentCallback segment,
         CancelCallback cancel) =>
         transcribe(model.DangerousGetHandle(), samples, sampleCount, language, translate ? 1 : 0,
-            progress, segment, cancel, IntPtr.Zero);
+            initialPrompt, progress, segment, cancel, IntPtr.Zero);
 
     public int SegmentCount(ModelHandle model) => segmentCount(model.DangerousGetHandle());
     public long SegmentBegin(ModelHandle model, int index) => segmentBegin(model.DangerousGetHandle(), index);

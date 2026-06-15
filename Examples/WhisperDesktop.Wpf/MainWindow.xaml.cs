@@ -40,6 +40,8 @@ public partial class MainWindow : Window
     readonly List<SubtitlePreviewItem> previewSegments = [];
     readonly List<LiveSubtitleItem> liveSegments = [];
     readonly List<CaptureDeviceOption> captureDevices = [];
+    readonly TerminologyService terminologyService = new();
+    IReadOnlyList<TerminologyPack> terminologyPacks = [];
     readonly IReadOnlyList<EngineOption> engines;
     readonly IReadOnlyList<LanguageOption> languages;
     readonly IReadOnlyList<OutputFormatOption> outputFormats;
@@ -79,6 +81,8 @@ public partial class MainWindow : Window
     bool liveTranscribing;
     bool liveStalled;
     bool translate;
+    bool terminologyEnabled;
+    bool terminologySelectionConfigured;
     Stopwatch? batchStopwatch;
     Stopwatch? modelLoadStopwatch;
     Stopwatch? liveStopwatch;
@@ -91,6 +95,7 @@ public partial class MainWindow : Window
     CaptureDeviceOption? selectedCaptureDevice;
     string? selectedCaptureEndpoint;
     List<string> recentModels = [];
+    List<string> selectedTerminologyPackIds = [];
 
     public MainWindow()
     {
@@ -141,6 +146,7 @@ public partial class MainWindow : Window
         LoadConfig();
         transcription = selectedEngine.Create();
         logOutput = AppLogger.StartSession(selectedEngine.Name);
+        LoadTerminologyPacks();
 
         InitializeComponent();
         Library.setLogSink(eLogLevel.Info, eLoggerFlags.SkipFormatMessage, OnNativeLog);
@@ -218,6 +224,9 @@ public partial class MainWindow : Window
             case "clearLiveSegments": ClearLiveSegments(); break;
             case "exportLive": ExportLiveSegments(command.Payload); break;
             case "openLogFolder": OpenLogFolder(); break;
+            case "openTerminologyFolder": OpenTerminologyFolder(); break;
+            case "refreshTerminology": LoadTerminologyPacks(); PublishState(); break;
+            case "setTerminologyPackSelected": SetTerminologyPackSelected(command.Payload); break;
         }
     }
 
@@ -545,6 +554,9 @@ public partial class MainWindow : Window
                 if (!isRunning && !isLiveRunning && !isLivePreparing)
                     translate = value.GetBoolean() && selectedLanguage.Id != "en";
                 break;
+            case "terminologyEnabled":
+                terminologyEnabled = value.GetBoolean();
+                break;
             case "autoLoadModel":
                 autoLoadModel = value.GetBoolean();
                 break;
@@ -563,6 +575,21 @@ public partial class MainWindow : Window
                 }
                 break;
         }
+        SaveConfig();
+        PublishState();
+    }
+
+    void SetTerminologyPackSelected(JsonElement payload)
+    {
+        string? id = payload.GetProperty("id").GetString();
+        bool selected = payload.GetProperty("selected").GetBoolean();
+        if (string.IsNullOrWhiteSpace(id))
+            return;
+
+        selectedTerminologyPackIds.RemoveAll(item => string.Equals(item, id, StringComparison.OrdinalIgnoreCase));
+        if (selected)
+            selectedTerminologyPackIds.Add(id);
+        terminologySelectionConfigured = true;
         SaveConfig();
         PublishState();
     }
@@ -604,6 +631,9 @@ public partial class MainWindow : Window
         int failed = 0;
         int skipped = jobs.Count(job => job.IsSelected && job.State == JobState.Skipped);
         TranscriptionJob[] selectedJobs = jobs.Where(job => job.IsSelected && job.State != JobState.Skipped).ToArray();
+        ActiveTerminology activeTerminology = terminologyEnabled
+            ? terminologyService.BuildActiveTerminology(terminologyPacks, selectedTerminologyPackIds)
+            : new ActiveTerminology([], null, 0, []);
         foreach (TranscriptionJob job in selectedJobs)
         {
             job.Elapsed = null;
@@ -615,6 +645,11 @@ public partial class MainWindow : Window
             }
         }
         AppendLog("批次", $"开始转录：{selectedJobs.Length} 个文件，已跳过 {skipped} 个，总时长 {FormatDuration(TimeSpan.FromSeconds(selectedJobs.Sum(job => job.Duration?.TotalSeconds ?? 0)))}");
+        if (terminologyEnabled)
+        {
+            AppendLog("术语词库",
+                $"启用 {activeTerminology.Packs.Count} 个词库，注入 {activeTerminology.PromptTermCount} 个术语，加载 {activeTerminology.Corrections.Count} 条纠错规则");
+        }
         SendPatch(new
         {
             isRunning,
@@ -656,6 +691,8 @@ public partial class MainWindow : Window
                     Directory.CreateDirectory(targetFolder);
                     TranscriptionResult result = await transcription.TranscribeAsync(
                         job.InputPath, targetFolder, selectedLanguage.Value, translate, selectedOutputFormat.Value,
+                        activeTerminology.InitialPrompt,
+                        activeTerminology.Corrections,
                         progress,
                         segment => Dispatcher.BeginInvoke(() =>
                         {
@@ -675,6 +712,8 @@ public partial class MainWindow : Window
                         job.State = JobState.Completed;
                         job.StatusText = "完成";
                         completed++;
+                        if (result.CorrectionCount > 0)
+                            AppendLog(job.FileName, $"术语词库自动修正 {result.CorrectionCount} 处");
                     }
                 }
                 catch (OperationCanceledException)
@@ -1112,6 +1151,24 @@ public partial class MainWindow : Window
         Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{LogFilePath}\"") { UseShellExecute = true });
     }
 
+    void OpenTerminologyFolder()
+    {
+        Directory.CreateDirectory(terminologyService.DirectoryPath);
+        Process.Start(new ProcessStartInfo("explorer.exe", terminologyService.DirectoryPath) { UseShellExecute = true });
+    }
+
+    void LoadTerminologyPacks()
+    {
+        terminologyPacks = terminologyService.LoadPacks((message, exception) => AppendLog("术语词库", message, exception, "WARN"));
+        if (!terminologySelectionConfigured)
+        {
+            selectedTerminologyPackIds = terminologyPacks
+                .Where(pack => pack.Enabled)
+                .Select(pack => pack.Id)
+                .ToList();
+        }
+    }
+
     void OnNativeLog(eLogLevel level, string message) => Dispatcher.BeginInvoke(() => AppendLog(level.ToString(), message));
 
     void PublishState()
@@ -1136,6 +1193,30 @@ public partial class MainWindow : Window
             modelProgressIndeterminate,
             modelLoadElapsedSeconds,
             autoLoadModel,
+            terminologyEnabled,
+            terminologyDirectory = terminologyService.DirectoryPath,
+            terminologyPacks = terminologyPacks.Select(pack => new
+            {
+                pack.Id,
+                pack.Name,
+                pack.Description,
+                pack.Enabled,
+                pack.Priority,
+                termCount = pack.Terms.Count,
+                terms = pack.Terms
+                    .Where(term => term.Enabled && !string.IsNullOrWhiteSpace(term.Text))
+                    .OrderByDescending(term => term.Priority)
+                    .Take(40)
+                    .Select(term => new
+                    {
+                        term.Text,
+                        term.Category,
+                        aliases = term.Aliases,
+                        corrections = term.Corrections,
+                    }),
+                selected = selectedTerminologyPackIds.Contains(pack.Id, StringComparer.OrdinalIgnoreCase),
+                pack.FilePath,
+            }),
             outputFolder,
             globalStatus,
             batchStatistics = CreateBatchStatistics(),
@@ -1281,6 +1362,12 @@ public partial class MainWindow : Window
                     autoLoadModel = config.AutoLoadModel;
                     recentModels = config.RecentModels ?? new();
                     selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
+                    terminologyEnabled = config.TerminologyEnabled;
+                    if (config.SelectedTerminologyPacks is not null)
+                    {
+                        selectedTerminologyPackIds = config.SelectedTerminologyPacks;
+                        terminologySelectionConfigured = true;
+                    }
                 }
             }
         }
@@ -1312,6 +1399,8 @@ public partial class MainWindow : Window
                 AutoLoadModel = autoLoadModel,
                 RecentModels = recentModels,
                 SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
+                TerminologyEnabled = terminologyEnabled,
+                SelectedTerminologyPacks = selectedTerminologyPackIds,
             };
 
             string json = JsonSerializer.Serialize(config, JsonOptions);
@@ -1335,6 +1424,8 @@ public partial class MainWindow : Window
         public bool AutoLoadModel { get; set; } = true;
         public List<string> RecentModels { get; set; } = new();
         public string? SelectedCaptureEndpoint { get; set; }
+        public bool TerminologyEnabled { get; set; } = false;
+        public List<string>? SelectedTerminologyPacks { get; set; }
     }
 
     sealed record HostCommand(string Action, JsonElement Payload);

@@ -13,6 +13,7 @@ const emptyState: AppState = {
   engines: [], languages: [], formats: [], outputLocations: [], selectedEngine: '', selectedLanguage: '',
   selectedFormat: '', selectedOutputLocation: '', translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
   modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
+  terminologyEnabled: false, terminologyDirectory: '', terminologyPacks: [],
   outputFolder: '', globalStatus: '正在初始化...', isRunning: false, isLoadingModel: false,
   isScanningMedia: false,
   batchStatistics: { selectedCount: 0, knownDurationCount: 0, unknownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0, etaIsPartial: false, isEstimating: false },
@@ -356,6 +357,21 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
       </section>
       <section className="panel full"><PanelHeading title="识别与翻译" caption="设置输入音频的实际语言" /><Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
         <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>
+      </section>
+      <section className="panel full"><div className="panel-toolbar"><PanelHeading title="术语词库" caption={state.terminologyDirectory || '词库目录尚未初始化'} />
+        <div className="text-actions"><button onClick={() => command('refreshTerminology')}>刷新</button><button onClick={() => command('openTerminologyFolder')}>打开目录</button></div>
+      </div>
+        <label className="toggle-row"><input type="checkbox" checked={state.terminologyEnabled} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('terminologyEnabled', e.target.checked)} /><span><strong>启用术语词库</strong><small>转写前注入高优先级术语，转写后按配置做安全纠错</small></span></label>
+        <div className="terminology-list">
+          {state.terminologyPacks.length === 0 && <EmptyState text="打开目录后添加 JSON 词库文件" />}
+          {state.terminologyPacks.map(pack => <label className="terminology-item" key={pack.id}>
+            <input type="checkbox" checked={pack.selected} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => command('setTerminologyPackSelected', { id: pack.id, selected: e.target.checked })} />
+            <span><strong>{pack.name}</strong><small title={pack.filePath || pack.id}>{pack.description || pack.id}</small>
+              <span className="terminology-terms">{pack.terms.slice(0, 24).map(term => <b key={`${pack.id}-${term.text}`} title={`${term.category || '术语'}${term.corrections?.length ? ` · 纠错：${term.corrections.join(', ')}` : ''}`}>{term.text}</b>)}</span>
+            </span>
+            <em>{pack.termCount} 词</em>
+          </label>)}
+        </div>
       </section>
     </div>
   </div>

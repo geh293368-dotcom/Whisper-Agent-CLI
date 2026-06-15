@@ -49,6 +49,19 @@ const mockState: AppState = {
   selectedEngine: 'cuda', selectedLanguage: 'zh', selectedFormat: 'srt', selectedOutputLocation: 'selected',
   translate: false, modelPath: '', modelStatus: '尚未加载模型', modelProgress: 0,
   modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
+  terminologyEnabled: false, terminologyDirectory: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\terminology',
+  terminologyPacks: [
+    { id: 'game-vfx-course', name: 'Unity 游戏特效课程', description: '来自字幕评估报告的 Unity、MOBA 和游戏特效错词', enabled: true, priority: 90, termCount: 16, selected: true, terms: [
+      { text: '光晕', category: '特效', corrections: ['光运'] },
+      { text: '拖尾', category: '特效', corrections: ['脱尾', '托尾', '油尾'] },
+      { text: '溶解', category: '材质', corrections: ['融解'] },
+    ] },
+    { id: 'hand-drawn-animation', name: '手绘动画教程', description: '来自字幕评估报告的手绘、关键帧和动画错词', enabled: true, priority: 80, termCount: 13, selected: true, terms: [
+      { text: '手绘', category: '动画', corrections: ['手会'] },
+      { text: '关键帧', category: '动画', corrections: ['关键针', '关键真', '关键震'] },
+      { text: '压感', category: '绘制', corrections: ['压杆'] },
+    ] },
+  ],
   outputFolder: 'C:\\Users\\Public\\Documents', globalStatus: '浏览器预览模式',
   isScanningMedia: false,
   batchStatistics: { selectedCount: 0, knownDurationCount: 0, unknownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0, etaIsPartial: false, isEstimating: false },

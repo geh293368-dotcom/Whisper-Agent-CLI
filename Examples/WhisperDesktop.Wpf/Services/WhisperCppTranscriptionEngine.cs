@@ -56,6 +56,8 @@ public sealed class WhisperCppTranscriptionEngine : ITranscriptionEngine
         eLanguage language,
         bool translate,
         OutputFormat format,
+        string? initialPrompt,
+        IReadOnlyList<TermCorrection> corrections,
         IProgress<double>? progress,
         Action<TranscriptionSegment>? liveSegment,
         CancellationToken cancellationToken)
@@ -91,6 +93,7 @@ public sealed class WhisperCppTranscriptionEngine : ITranscriptionEngine
                 audio.countSamples(),
                 languageCode,
                 translate,
+                initialPrompt,
                 progressCallback,
                 segmentCallback,
                 cancelCallback);
@@ -109,7 +112,7 @@ public sealed class WhisperCppTranscriptionEngine : ITranscriptionEngine
                     native.SegmentText(model, index)));
             }
 
-            return TranscriptionOutput.Write(copied, inputPath, outputFolder, format);
+            return TranscriptionOutput.Write(copied, inputPath, outputFolder, format, corrections);
         }, cancellationToken);
     }
 

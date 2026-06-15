@@ -102,6 +102,7 @@ WD_API int __cdecl wd_transcribe(
     int sample_count,
     const char * language,
     int translate,
+    const char * initial_prompt,
     wd_progress_callback progress,
     wd_segment_callback segment,
     wd_cancel_callback cancel,
@@ -115,6 +116,9 @@ WD_API int __cdecl wd_transcribe(
     params.n_threads = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
     params.language = language;
     params.translate = translate != 0;
+    params.initial_prompt = initial_prompt != nullptr && initial_prompt[0] != '\0'
+        ? initial_prompt
+        : nullptr;
     params.no_context = true;
     params.print_progress = false;
     params.print_realtime = false;

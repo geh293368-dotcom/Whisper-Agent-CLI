@@ -41,6 +41,25 @@ export interface CaptureDevice {
   name: string
 }
 
+export interface TerminologyPack {
+  id: string
+  name: string
+  description?: string
+  enabled: boolean
+  priority: number
+  termCount: number
+  terms: TerminologyTerm[]
+  selected: boolean
+  filePath?: string
+}
+
+export interface TerminologyTerm {
+  text: string
+  category?: string
+  aliases?: string[]
+  corrections?: string[]
+}
+
 export interface LiveSegment {
   index: number
   begin: string
@@ -64,6 +83,9 @@ export interface AppState {
   modelProgressIndeterminate: boolean
   modelLoadElapsedSeconds: number
   autoLoadModel: boolean
+  terminologyEnabled: boolean
+  terminologyDirectory: string
+  terminologyPacks: TerminologyPack[]
   outputFolder: string
   globalStatus: string
   batchStatistics: BatchStatistics

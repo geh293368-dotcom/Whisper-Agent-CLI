@@ -38,6 +38,8 @@ public sealed class TranscriptionService : ITranscriptionEngine
         eLanguage language,
         bool translate,
         OutputFormat format,
+        string? initialPrompt,
+        IReadOnlyList<TermCorrection> corrections,
         IProgress<double>? progress,
         Action<TranscriptionSegment>? liveSegment,
         CancellationToken cancellationToken)
@@ -68,7 +70,7 @@ public sealed class TranscriptionService : ITranscriptionEngine
                     segment.text ?? string.Empty));
             }
 
-            return TranscriptionOutput.Write(copied, inputPath, outputFolder, format);
+            return TranscriptionOutput.Write(copied, inputPath, outputFolder, format, corrections);
         }, cancellationToken);
     }
 

@@ -3,7 +3,8 @@ using Whisper;
 namespace WhisperDesktop.Modern.Services;
 
 public readonly record struct TranscriptionSegment(TimeSpan Begin, TimeSpan End, string Text);
-public readonly record struct TranscriptionResult(string? OutputPath, int SegmentCount);
+public readonly record struct TermCorrection(string Source, string Target);
+public readonly record struct TranscriptionResult(string? OutputPath, int SegmentCount, int CorrectionCount);
 
 public interface ITranscriptionEngine : IDisposable
 {
@@ -20,6 +21,8 @@ public interface ITranscriptionEngine : IDisposable
         eLanguage language,
         bool translate,
         OutputFormat format,
+        string? initialPrompt,
+        IReadOnlyList<TermCorrection> corrections,
         IProgress<double>? progress,
         Action<TranscriptionSegment>? liveSegment,
         CancellationToken cancellationToken);
