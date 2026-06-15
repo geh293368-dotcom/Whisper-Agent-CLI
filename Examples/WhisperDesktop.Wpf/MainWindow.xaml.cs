@@ -52,6 +52,8 @@ public partial class MainWindow : Window
     CancellationTokenSource? liveCancellation;
     readonly LiveTranscriptionService liveTranscription = new();
     readonly DispatcherTimer liveTimer;
+    readonly DispatcherTimer batchStatisticsTimer;
+    readonly DispatcherTimer modelLoadTimer;
     string modelPath = string.Empty;
     string outputFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     string modelStatus = "尚未加载模型";
@@ -60,8 +62,16 @@ public partial class MainWindow : Window
     string LogFilePath => AppLogger.CurrentLogPath;
     string liveStatus = "正在读取录音设备";
     double modelProgress;
+    double modelLoadElapsedSeconds;
+    double smoothedBatchSpeed;
+    double lastBatchProcessedSeconds;
+    double lastBatchElapsedSeconds;
     bool isRunning;
     bool isLoadingModel;
+    bool modelProgressIndeterminate;
+    bool autoLoadModel = true;
+    bool autoLoadAttempted;
+    bool hasBatchSpeedSample;
     bool isScanningMedia;
     bool isLiveRunning;
     bool isLivePreparing;
@@ -70,6 +80,7 @@ public partial class MainWindow : Window
     bool liveStalled;
     bool translate;
     Stopwatch? batchStopwatch;
+    Stopwatch? modelLoadStopwatch;
     Stopwatch? liveStopwatch;
     double liveModelProgress;
     string? liveOutputPath;
@@ -118,6 +129,14 @@ public partial class MainWindow : Window
 
         liveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         liveTimer.Tick += (_, _) => SendPatch(new { liveElapsedSeconds = liveStopwatch?.Elapsed.TotalSeconds ?? 0 });
+        batchStatisticsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        batchStatisticsTimer.Tick += (_, _) => SendPatch(new { batchStatistics = CreateBatchStatistics(updateEstimate: true) });
+        modelLoadTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        modelLoadTimer.Tick += (_, _) =>
+        {
+            modelLoadElapsedSeconds = modelLoadStopwatch?.Elapsed.TotalSeconds ?? modelLoadElapsedSeconds;
+            SendPatch(new { modelLoadElapsedSeconds });
+        };
 
         LoadConfig();
         transcription = selectedEngine.Create();
@@ -175,9 +194,13 @@ public partial class MainWindow : Window
     {
         switch (command.Action)
         {
-            case "initialize": PublishState(); break;
+            case "initialize":
+                PublishState();
+                await TryAutoLoadModelAsync();
+                break;
             case "chooseModel": ChooseModel(); break;
             case "loadModel": await LoadModelAsync(); break;
+            case "cancelModelLoad": CancelModelLoad(); break;
             case "addFiles": await AddFilesAsync(); break;
             case "addFolder": await AddFolderAsync(); break;
             case "chooseOutputFolder": ChooseOutputFolder(); break;
@@ -215,7 +238,27 @@ public partial class MainWindow : Window
         }
     }
 
-    async Task LoadModelAsync()
+    async Task TryAutoLoadModelAsync()
+    {
+        if (autoLoadAttempted)
+            return;
+        autoLoadAttempted = true;
+
+        if (!autoLoadModel || string.IsNullOrWhiteSpace(modelPath))
+            return;
+        if (!File.Exists(modelPath))
+        {
+            modelStatus = "上次使用的模型文件不存在";
+            globalStatus = "请重新选择模型文件";
+            AppendLog("模型", $"自动加载已跳过，文件不存在：{modelPath}", level: "WARN");
+            PublishState();
+            return;
+        }
+
+        await LoadModelAsync(automatic: true);
+    }
+
+    async Task LoadModelAsync(bool automatic = false)
     {
         if (!File.Exists(modelPath) || isLoadingModel || isRunning || isLiveRunning || isLivePreparing)
             return;
@@ -225,7 +268,13 @@ public partial class MainWindow : Window
         isLoadingModel = true;
         modelStatus = "正在加载模型";
         modelProgress = 0;
+        modelProgressIndeterminate = selectedEngine.Id is "cuda" or "cpu";
+        modelLoadElapsedSeconds = 0;
+        modelLoadStopwatch = Stopwatch.StartNew();
+        modelLoadTimer.Start();
         globalStatus = "正在将模型载入内存与显存...";
+        string loadMode = automatic ? "自动" : "手动";
+        AppendLog("模型", $"开始{loadMode}加载 {Path.GetFileName(modelPath)}，引擎 {selectedEngine.Name}");
         PublishState();
 
         try
@@ -239,11 +288,13 @@ public partial class MainWindow : Window
             modelProgress = 1;
             modelStatus = $"已加载 {Path.GetFileName(modelPath)}";
             globalStatus = "模型加载完成，可以开始转录";
+            AppendLog("模型", $"{loadMode}加载完成，耗时 {modelLoadStopwatch.Elapsed.TotalSeconds:F1} 秒");
         }
         catch (OperationCanceledException)
         {
             modelStatus = "模型加载已取消";
             globalStatus = "已取消";
+            AppendLog("模型", $"{loadMode}加载已取消，耗时 {modelLoadStopwatch.Elapsed.TotalSeconds:F1} 秒", level: "WARN");
         }
         catch (Exception ex)
         {
@@ -254,9 +305,22 @@ public partial class MainWindow : Window
         }
         finally
         {
+            modelLoadStopwatch.Stop();
+            modelLoadElapsedSeconds = modelLoadStopwatch.Elapsed.TotalSeconds;
+            modelLoadTimer.Stop();
             isLoadingModel = false;
+            modelProgressIndeterminate = false;
             PublishState();
         }
+    }
+
+    void CancelModelLoad()
+    {
+        if (!isLoadingModel)
+            return;
+        globalStatus = "正在取消模型加载...";
+        operationCancellation?.Cancel();
+        SendPatch(new { globalStatus });
     }
 
     async Task AddFilesAsync()
@@ -479,6 +543,9 @@ public partial class MainWindow : Window
                 if (!isRunning && !isLiveRunning && !isLivePreparing)
                     translate = value.GetBoolean() && selectedLanguage.Id != "en";
                 break;
+            case "autoLoadModel":
+                autoLoadModel = value.GetBoolean();
+                break;
             case "captureDevice":
                 if (!isLiveRunning && !isLivePreparing)
                 {
@@ -525,6 +592,11 @@ public partial class MainWindow : Window
         operationCancellation = new CancellationTokenSource();
         isRunning = true;
         batchStopwatch = Stopwatch.StartNew();
+        smoothedBatchSpeed = 0;
+        lastBatchProcessedSeconds = 0;
+        lastBatchElapsedSeconds = 0;
+        hasBatchSpeedSample = false;
+        batchStatisticsTimer.Start();
         previewSegments.Clear();
         int completed = 0;
         int failed = 0;
@@ -573,7 +645,6 @@ public partial class MainWindow : Window
                     {
                         lastProgressUpdate = now;
                         SendJobUpdate(job);
-                        SendPatch(new { batchStatistics = CreateBatchStatistics() });
                     }
                 });
                 try
@@ -637,6 +708,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            batchStatisticsTimer.Stop();
             batchStopwatch?.Stop();
             isRunning = false;
             object statistics = CreateBatchStatistics();
@@ -895,7 +967,13 @@ public partial class MainWindow : Window
     void QueueChanged()
     {
         if (!isRunning)
+        {
             batchStopwatch = null;
+            smoothedBatchSpeed = 0;
+            lastBatchProcessedSeconds = 0;
+            lastBatchElapsedSeconds = 0;
+            hasBatchSpeedSample = false;
+        }
         globalStatus = $"{jobs.Count} 个文件，已选择 {jobs.Count(job => job.IsSelected)} 个";
         PublishState();
     }
@@ -911,10 +989,11 @@ public partial class MainWindow : Window
         && !isLiveRunning
         && !isLivePreparing;
 
-    object CreateBatchStatistics()
+    object CreateBatchStatistics(bool updateEstimate = false)
     {
         TranscriptionJob[] selected = jobs.Where(job => job.IsSelected).ToArray();
         int knownDurationCount = selected.Count(job => job.Duration is not null);
+        int unknownDurationCount = selected.Length - knownDurationCount;
         double totalDurationSeconds = selected.Sum(job => job.Duration?.TotalSeconds ?? 0);
         double processedDurationSeconds = batchStopwatch is null
             ? 0
@@ -932,19 +1011,46 @@ public partial class MainWindow : Window
         });
         double elapsedSeconds = batchStopwatch?.Elapsed.TotalSeconds ?? 0;
         double speed = elapsedSeconds > 0 ? processedDurationSeconds / elapsedSeconds : 0;
-        double? etaSeconds = isRunning && knownDurationCount == selected.Length && speed > 0
-            ? remainingDurationSeconds / speed
+        if (updateEstimate && isRunning)
+        {
+            double deltaElapsed = elapsedSeconds - lastBatchElapsedSeconds;
+            double deltaProcessed = processedDurationSeconds - lastBatchProcessedSeconds;
+            if (deltaElapsed > 0 && deltaProcessed > 0)
+            {
+                double sampleSpeed = deltaProcessed / deltaElapsed;
+                smoothedBatchSpeed = hasBatchSpeedSample
+                    ? smoothedBatchSpeed * 0.8 + sampleSpeed * 0.2
+                    : sampleSpeed;
+                hasBatchSpeedSample = true;
+            }
+            lastBatchElapsedSeconds = elapsedSeconds;
+            lastBatchProcessedSeconds = processedDurationSeconds;
+        }
+
+        double estimateSpeed = hasBatchSpeedSample ? smoothedBatchSpeed : speed;
+        bool hasEnoughSamples = elapsedSeconds >= 10
+            || processedDurationSeconds >= 120
+            || selected.Any(job => job.State == JobState.Completed && job.Duration is not null);
+        double? etaSeconds = isRunning && hasEnoughSamples && remainingDurationSeconds > 0 && estimateSpeed > 0
+            ? remainingDurationSeconds / estimateSpeed
+            : null;
+        string? estimatedCompletionTime = etaSeconds is not null
+            ? DateTimeOffset.Now.AddSeconds(etaSeconds.Value).ToString("O")
             : null;
 
         return new
         {
             selectedCount = selected.Length,
             knownDurationCount,
+            unknownDurationCount,
             totalDurationSeconds,
             processedDurationSeconds,
             elapsedSeconds,
             speed,
             etaSeconds,
+            estimatedCompletionTime,
+            etaIsPartial = unknownDurationCount > 0,
+            isEstimating = isRunning && remainingDurationSeconds > 0 && etaSeconds is null,
         };
     }
 
@@ -1003,6 +1109,9 @@ public partial class MainWindow : Window
             modelPath,
             modelStatus,
             modelProgress,
+            modelProgressIndeterminate,
+            modelLoadElapsedSeconds,
+            autoLoadModel,
             outputFolder,
             globalStatus,
             batchStatistics = CreateBatchStatistics(),
@@ -1107,6 +1216,8 @@ public partial class MainWindow : Window
             liveCancellation?.Cancel();
         }
         liveTimer.Stop();
+        batchStatisticsTimer.Stop();
+        modelLoadTimer.Stop();
         transcription.Dispose();
         captureMediaFoundation?.Dispose();
     }
@@ -1143,6 +1254,7 @@ public partial class MainWindow : Window
                     outputFolder = config.OutputFolder;
                     translate = config.Translate;
                     modelPath = config.ModelPath;
+                    autoLoadModel = config.AutoLoadModel;
                     recentModels = config.RecentModels ?? new();
                     selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
                 }
@@ -1173,6 +1285,7 @@ public partial class MainWindow : Window
                 OutputFolder = outputFolder,
                 Translate = translate,
                 ModelPath = modelPath,
+                AutoLoadModel = autoLoadModel,
                 RecentModels = recentModels,
                 SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
             };
@@ -1195,6 +1308,7 @@ public partial class MainWindow : Window
         public string OutputFolder { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         public bool Translate { get; set; } = false;
         public string ModelPath { get; set; } = string.Empty;
+        public bool AutoLoadModel { get; set; } = true;
         public List<string> RecentModels { get; set; } = new();
         public string? SelectedCaptureEndpoint { get; set; }
     }

@@ -12,9 +12,10 @@ const getFilename = (path: string) => {
 const emptyState: AppState = {
   engines: [], languages: [], formats: [], outputLocations: [], selectedEngine: '', selectedLanguage: '',
   selectedFormat: '', selectedOutputLocation: '', translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
-  modelProgress: 0, outputFolder: '', globalStatus: '正在初始化...', isRunning: false, isLoadingModel: false,
+  modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
+  outputFolder: '', globalStatus: '正在初始化...', isRunning: false, isLoadingModel: false,
   isScanningMedia: false,
-  batchStatistics: { selectedCount: 0, knownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0 },
+  batchStatistics: { selectedCount: 0, knownDurationCount: 0, unknownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0, etaIsPartial: false, isEstimating: false },
   canStart: false, jobs: [], sources: [], segments: [], logs: '', logFilePath: '', captureDevices: [], liveStatus: '正在读取录音设备',
   canStartLive: false, isLiveRunning: false, isLivePreparing: false, liveVoiceDetected: false,
   liveTranscribing: false, liveStalled: false, liveModelProgress: 0, liveElapsedSeconds: 0, liveSegments: [],
@@ -26,15 +27,33 @@ function App() {
   const [state, setState] = useState<AppState>(emptyState)
   const [error, setError] = useState('')
   const [previewTab, setPreviewTab] = useState<'segments' | 'logs'>('segments')
+  const pendingSegments = useRef<Segment[]>([])
   const selectedCount = useMemo(() => state.jobs.filter(job => job.selected).length, [state.jobs])
 
   useEffect(() => {
+    const flushSegments = () => {
+      if (pendingSegments.current.length === 0) return
+      const batch = pendingSegments.current
+      pendingSegments.current = []
+      setState(current => ({ ...current, segments: [...current.segments, ...batch].slice(-5_000) }))
+    }
+    const previewTimer = window.setInterval(flushSegments, 1_000)
     const unsubscribe = desktopBridge.subscribe(message => {
       if (message.type === 'state') {
         setState(message.payload as AppState)
         setError('')
       } else if (message.type === 'patch') {
-        setState(current => ({ ...current, ...(message.payload as Partial<AppState>) }))
+        const patch = message.payload as Partial<AppState>
+        if (Array.isArray(patch.segments) && patch.segments.length === 0) {
+          pendingSegments.current = []
+        }
+        if (patch.isRunning === false && pendingSegments.current.length > 0) {
+          const batch = pendingSegments.current
+          pendingSegments.current = []
+          setState(current => ({ ...current, ...patch, segments: [...current.segments, ...batch].slice(-5_000) }))
+        } else {
+          setState(current => ({ ...current, ...patch }))
+        }
       } else if (message.type === 'jobUpdate') {
         const update = message.payload as Job
         setState(current => ({
@@ -42,8 +61,7 @@ function App() {
           jobs: current.jobs.map(job => job.id === update.id ? update : job),
         }))
       } else if (message.type === 'segmentAdded') {
-        const segment = message.payload as Segment
-        setState(current => ({ ...current, segments: [...current.segments.slice(-4_999), segment] }))
+        pendingSegments.current.push(message.payload as Segment)
       } else if (message.type === 'liveSegmentAdded') {
         const segment = message.payload as LiveSegment
         setState(current => ({ ...current, liveSegments: [...current.liveSegments.slice(-4_999), segment] }))
@@ -55,7 +73,10 @@ function App() {
       }
     })
     desktopBridge.send('initialize')
-    return unsubscribe
+    return () => {
+      window.clearInterval(previewTimer)
+      unsubscribe()
+    }
   }, [])
 
   const command = (action: string, payload?: unknown) => desktopBridge.send(action, payload)
@@ -107,6 +128,20 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
     return hours > 0
       ? `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
       : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  }
+  const completionTime = state.batchStatistics.estimatedCompletionTime
+    ? new Date(state.batchStatistics.estimatedCompletionTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : ''
+  const estimateText = state.batchStatistics.isEstimating
+    ? '正在估算完成时间...'
+    : state.batchStatistics.etaSeconds != null
+      ? `预计 ${completionTime} 完成 · 剩余 ${formatDuration(state.batchStatistics.etaSeconds)}`
+      : '预计完成时间 --'
+  const completedCount = state.jobs.filter(job => job.selected && job.status === '完成').length
+  const formatCompactDuration = (seconds: number) => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '0 分钟'
+    if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} 分钟`
+    return `${(seconds / 3600).toFixed(seconds >= 36_000 ? 0 : 1)} 小时`
   }
 
   const queueColumns: TableColumn[] = [
@@ -175,7 +210,7 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
 
       <div className="batch-main">
         <section className="panel queue-panel">
-          <div className="panel-toolbar"><PanelHeading title="任务队列" caption={`${state.jobs.length} 个文件，已选择 ${selectedCount} 个`} />
+          <div className="panel-toolbar"><PanelHeading title="任务队列" caption={`已选 ${selectedCount} · 总时长 ${formatCompactDuration(state.batchStatistics.totalDurationSeconds)} · 已完成 ${completedCount}/${selectedCount}`} />
             <div className="text-actions"><button onClick={() => command('setAllSelected', true)}>全选</button><button onClick={() => command('setAllSelected', false)}>全不选</button><button onClick={() => command('removeSelectedRows')}>移除</button><button onClick={() => command('clearJobs')}>清空</button></div>
           </div>
           <ResizableTable
@@ -208,7 +243,8 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
       {' · '}已处理 {formatDuration(state.batchStatistics.processedDurationSeconds)}
       {' · '}已用时 {formatDuration(state.batchStatistics.elapsedSeconds)}
       {' · '}速度 {state.batchStatistics.speed > 0 ? `${state.batchStatistics.speed.toFixed(1)}x` : '--'}
-      {' · '}ETA {formatDuration(state.batchStatistics.etaSeconds)}
+      {' · '}{estimateText}
+      {state.batchStatistics.unknownDurationCount > 0 && ` · ${state.batchStatistics.unknownDurationCount} 个未知时长文件未计入`}
     </span></div>
       <div><button className="button" disabled={!state.isRunning} onClick={() => command('stop')}>停止</button><button className="button primary start" disabled={!state.canStart} onClick={() => command('start')}>{state.isRunning ? '正在转录...' : '开始转录'}</button></div>
     </footer>
@@ -314,7 +350,8 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
           </select>
           <button className="button" disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} onClick={() => command('chooseModel')}>选择模型</button>
         </div></Field>
-        <div className="load-row"><div><strong>{state.modelStatus}</strong><div className="progress-track large"><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className="button primary" disabled={!state.modelPath || state.isLoadingModel} onClick={() => command('loadModel')}>{state.isLoadingModel ? '加载中...' : '加载模型'}</button></div>
+        <div className="load-row"><div><strong>{state.modelStatus}</strong>{state.isLoadingModel && <small>已用时 {Math.floor(state.modelLoadElapsedSeconds)} 秒</small>}<div className={`progress-track large ${state.isLoadingModel && state.modelProgressIndeterminate ? 'indeterminate' : ''}`}><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className={`button ${state.isLoadingModel ? 'danger' : 'primary'}`} disabled={!state.isLoadingModel && (!state.modelPath || state.isRunning || state.isLiveRunning || state.isLivePreparing)} onClick={() => command(state.isLoadingModel ? 'cancelModelLoad' : 'loadModel')}>{state.isLoadingModel ? '取消加载' : '加载模型'}</button></div>
+        <label className="toggle-row"><input type="checkbox" checked={state.autoLoadModel} disabled={state.isLoadingModel || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('autoLoadModel', e.target.checked)} /><span><strong>启动时自动加载上次模型</strong><small>模型路径有效时在界面就绪后后台加载，不阻塞窗口响应</small></span></label>
       </section>
       <section className="panel full"><PanelHeading title="识别与翻译" caption="设置输入音频的实际语言" /><Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
         <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>

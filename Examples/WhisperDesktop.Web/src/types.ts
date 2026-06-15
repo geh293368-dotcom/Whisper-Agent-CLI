@@ -61,6 +61,9 @@ export interface AppState {
   modelPath: string
   modelStatus: string
   modelProgress: number
+  modelProgressIndeterminate: boolean
+  modelLoadElapsedSeconds: number
+  autoLoadModel: boolean
   outputFolder: string
   globalStatus: string
   batchStatistics: BatchStatistics
@@ -92,11 +95,15 @@ export interface AppState {
 export interface BatchStatistics {
   selectedCount: number
   knownDurationCount: number
+  unknownDurationCount: number
   totalDurationSeconds: number
   processedDurationSeconds: number
   elapsedSeconds: number
   speed: number
   etaSeconds?: number
+  estimatedCompletionTime?: string
+  etaIsPartial: boolean
+  isEstimating: boolean
 }
 
 export interface HostMessage {
