@@ -3,6 +3,14 @@ import { desktopBridge } from './bridge'
 import type { AppState, Job, LiveSegment, Page, Segment } from './types'
 import { ResizableTable, TableColumn } from './ResizableTable'
 
+const uiScaleOptions = [
+  { id: 'small', name: '小' },
+  { id: 'medium', name: '中' },
+  { id: 'large', name: '大' },
+]
+
+const defaultGeminiSample = '嗯这个地方我们可以把这个粒子拖尾调得更自然一点。'
+
 const getFilename = (path: string) => {
   if (!path) return ''
   const parts = path.split(/[\\/]/)
@@ -10,12 +18,16 @@ const getFilename = (path: string) => {
 }
 
 const emptyState: AppState = {
-  engines: [], languages: [], formats: [], outputLocations: [], selectedEngine: '', selectedLanguage: '',
-  selectedFormat: '', selectedOutputLocation: '', translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
+  engines: [], languages: [], formats: [], outputLocations: [], geminiModels: [], selectedEngine: '', selectedLanguage: '',
+  selectedFormat: '', selectedOutputLocation: '', selectedGeminiModel: 'gemini-3.1-flash-lite',
+  geminiApiKeyConfigured: false, geminiStatus: '未配置 API Key', isGeminiBusy: false, geminiSampleResult: '',
+  translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
   modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
+  uiScale: 'medium',
   terminologyEnabled: false, developerDiagnostics: false, terminologyDirectory: '', terminologyPacks: [],
   outputFolder: '', globalStatus: '正在初始化...', isRunning: false, isLoadingModel: false,
   isScanningMedia: false,
+  canStartAiSubtitleOptimization: false, isAiRunning: false, aiBatchStatus: '等待字幕优化任务', aiBatchReportPath: '', aiBatchSummary: '',
   batchStatistics: { selectedCount: 0, knownDurationCount: 0, unknownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0, etaIsPartial: false, isEstimating: false },
   canStart: false, jobs: [], sources: [], segments: [], logs: '', logFilePath: '', captureDevices: [], liveStatus: '正在读取录音设备',
   canStartLive: false, isLiveRunning: false, isLivePreparing: false, liveVoiceDetected: false,
@@ -93,7 +105,7 @@ function App() {
   const closeAbout = () => setPage(previousPage.current === 'about' ? 'batch' : previousPage.current)
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ui-font-${state.uiScale || 'medium'}`}>
       <aside className="sidebar">
         <button className="brand" type="button" onClick={openAbout} aria-label="打开关于页面" title="关于 Whisper Desktop">
           <span className="brand-mark">W</span><span><strong>Whisper</strong><small>Desktop Studio</small></span>
@@ -259,8 +271,14 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
       {' · '}速度 {state.batchStatistics.speed > 0 ? `${state.batchStatistics.speed.toFixed(1)}x` : '--'}
       {' · '}{estimateText}
       {state.batchStatistics.unknownDurationCount > 0 && ` · ${state.batchStatistics.unknownDurationCount} 个未知时长文件未计入`}
+      {` · AI ${state.aiBatchStatus}`}
+      {state.aiBatchSummary && ` · ${state.aiBatchSummary}`}
     </span></div>
-      <div><button className="button" disabled={!state.isRunning} onClick={() => command('stop')}>停止</button><button className="button primary start" disabled={!state.canStart} onClick={() => command('start')}>{state.isRunning ? '正在转录...' : '开始转录'}</button></div>
+      <div className="batch-actions">
+        <button className="button" disabled={!state.isRunning && !state.isAiRunning} onClick={() => command(state.isAiRunning ? 'stopAiSubtitleOptimization' : 'stop')}>停止</button>
+        <button className="button" disabled={!state.canStartAiSubtitleOptimization && !state.isAiRunning} onClick={() => command(state.isAiRunning ? 'stopAiSubtitleOptimization' : 'startAiSubtitleOptimization')}>{state.isAiRunning ? '正在 AI 优化...' : 'AI 优化并评分'}</button>
+        <button className="button primary start" disabled={!state.canStart} onClick={() => command('start')}>{state.isRunning ? '正在转录...' : '开始转录'}</button>
+      </div>
     </footer>
   </div>
 }
@@ -389,8 +407,37 @@ function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
 }
 
 function SettingsPage({ state, command, updateSetting }: { state: AppState; command: Command; updateSetting(name: string, value: unknown): void }) {
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [sampleText, setSampleText] = useState(defaultGeminiSample)
+  const canUseGemini = state.geminiApiKeyConfigured && !state.isGeminiBusy
+
   return <div className="page narrow-page"><header className="page-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>管理推理引擎、模型以及识别语言配置。</p></div></header>
     <div className="settings-grid">
+      <section className="panel"><PanelHeading title="界面显示" caption="根据屏幕尺寸调整文字可读性" />
+        <Field label="界面字号"><Select options={uiScaleOptions} value={state.uiScale || 'medium'} onChange={value => updateSetting('uiScale', value)} /></Field>
+      </section>
+      <section className="panel"><PanelHeading title="识别与翻译" caption="设置输入音频的实际语言" /><Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
+        <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>
+      </section>
+      <section className="panel ai-panel"><PanelHeading title="Gemini AI" caption="用于字幕优化的在线模型" />
+        <Field label="AI 模型"><Select disabled={state.isGeminiBusy} options={state.geminiModels} value={state.selectedGeminiModel || 'gemini-3.1-flash-lite'} onChange={value => updateSetting('geminiModel', value)} /></Field>
+        <Field label={state.geminiApiKeyConfigured ? '替换 API Key' : 'API Key'}><div className="input-action">
+          <input type="password" value={apiKeyInput} placeholder={state.geminiApiKeyConfigured ? '已配置，可输入新密钥替换' : '粘贴 Google AI Studio API Key'} onChange={e => setApiKeyInput(e.target.value)} />
+          <button className="button" disabled={state.isGeminiBusy || !apiKeyInput.trim()} onClick={() => { command('saveGeminiApiKey', { apiKey: apiKeyInput }); setApiKeyInput('') }}>保存</button>
+        </div></Field>
+        <div className="ai-actions">
+          <button className="button" disabled={!canUseGemini} onClick={() => command('testGeminiConnection')}>测试连接</button>
+          <button className="button" disabled={state.isGeminiBusy || !state.geminiApiKeyConfigured} onClick={() => command('clearGeminiApiKey')}>清除密钥</button>
+        </div>
+        <p className={`ai-status ${state.geminiApiKeyConfigured ? 'ready' : ''}`}>{state.isGeminiBusy ? '处理中...' : state.geminiStatus}</p>
+      </section>
+      <section className="panel ai-panel"><PanelHeading title="优化试跑" caption="先验证一条字幕的润色效果" />
+        <textarea className="sample-textarea" value={sampleText} onChange={e => setSampleText(e.target.value)} />
+        <div className="ai-actions">
+          <button className="button primary" disabled={!canUseGemini || !sampleText.trim()} onClick={() => command('optimizeGeminiSample', { text: sampleText })}>优化试跑</button>
+        </div>
+        <div className="sample-result">{state.geminiSampleResult || '保存 API Key 后，可在这里试跑一条字幕。'}</div>
+      </section>
       <section className="panel full"><PanelHeading title="推理模型" caption="推荐使用 CUDA 后端获得最高速度" />
         <Field label="推理引擎"><Select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} options={state.engines} value={state.selectedEngine} onChange={value => updateSetting('engine', value)} /></Field>
         <Field label="GGML 模型文件"><div className="input-action">
@@ -410,9 +457,6 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
         <div className="load-row"><div><strong>{state.modelStatus}</strong>{state.isLoadingModel && <small>已用时 {Math.floor(state.modelLoadElapsedSeconds)} 秒</small>}<div className={`progress-track large ${state.isLoadingModel && state.modelProgressIndeterminate ? 'indeterminate' : ''}`}><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className={`button ${state.isLoadingModel ? 'danger' : 'primary'}`} disabled={!state.isLoadingModel && (!state.modelPath || state.isRunning || state.isLiveRunning || state.isLivePreparing)} onClick={() => command(state.isLoadingModel ? 'cancelModelLoad' : 'loadModel')}>{state.isLoadingModel ? '取消加载' : '加载模型'}</button></div>
         <label className="toggle-row"><input type="checkbox" checked={state.autoLoadModel} disabled={state.isLoadingModel || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('autoLoadModel', e.target.checked)} /><span><strong>启动时自动加载上次模型</strong><small>模型路径有效时在界面就绪后后台加载，不阻塞窗口响应</small></span></label>
       </section>
-      <section className="panel full"><PanelHeading title="识别与翻译" caption="设置输入音频的实际语言" /><Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
-        <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>
-      </section>
       <section className="panel full"><div className="panel-toolbar"><PanelHeading title="术语词库" caption={state.terminologyDirectory || '词库目录尚未初始化'} />
         <div className="text-actions"><button onClick={() => command('refreshTerminology')}>刷新</button><button onClick={() => command('openTerminologyFolder')}>打开目录</button></div>
       </div>
@@ -428,12 +472,14 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
           </label>)}
         </div>
       </section>
-      <section className="panel full diagnostics-panel"><PanelHeading title="开发者诊断" caption="预留给字幕评分、AI 优化对比和质量报告，不影响普通用户工作流" />
+      <section className="panel diagnostics-panel"><PanelHeading title="开发者诊断" caption="预留给字幕质量排查" />
         <label className="toggle-row"><input type="checkbox" checked={state.developerDiagnostics} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('developerDiagnostics', e.target.checked)} /><span><strong>启用开发者诊断模式</strong><small>当前版本只保存开关并标记诊断意图；接入 AI 后再生成评分、规则命中和质量报告。</small></span></label>
-        <div className="diagnostics-preview">
-          <div><span>计划输出</span><strong>批次质量摘要、单文件评分、优化前后对比、规则命中明细</strong></div>
-          <div><span>默认可见性</span><strong>仅诊断模式可见，不进入普通用户主流程</strong></div>
-          <div><span>报告格式</span><strong>JSON / Markdown，后续随 AI 字幕优化一起接入</strong></div>
+      </section>
+      <section className="panel diagnostics-panel"><PanelHeading title="诊断输出" caption="后续质量报告预留位" />
+        <div className="diagnostics-preview diagnostics-preview-compact">
+          <div><span>报告</span><strong>批次摘要</strong></div>
+          <div><span>评分</span><strong>单文件质量</strong></div>
+          <div><span>对比</span><strong>优化前后</strong></div>
         </div>
       </section>
     </div>

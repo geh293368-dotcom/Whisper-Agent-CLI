@@ -6,6 +6,7 @@ declare global {
       webview?: {
         postMessage(message: DesktopCommand): void
         addEventListener(type: 'message', listener: (event: MessageEvent<HostMessage>) => void): void
+        removeEventListener(type: 'message', listener: (event: MessageEvent<HostMessage>) => void): void
       }
     }
   }
@@ -22,8 +23,11 @@ class WebView2Bridge implements DesktopBridge {
   }
 
   subscribe(listener: (message: HostMessage) => void) {
-    window.chrome?.webview?.addEventListener('message', event => listener(event.data))
-    return () => undefined
+    const webview = window.chrome?.webview
+    if (!webview) return () => undefined
+    const handler = (event: MessageEvent<HostMessage>) => listener(event.data)
+    webview.addEventListener('message', handler)
+    return () => webview.removeEventListener('message', handler)
   }
 }
 
@@ -46,9 +50,17 @@ const mockState: AppState = {
     { id: 'source', name: '原文件旁', description: '字幕写入媒体文件所在目录' },
     { id: 'preserve', name: '保留目录结构', description: '在输出目录中保留导入目录层级' },
   ],
+  geminiModels: [
+    { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite（低成本，推荐）' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash（更强，成本更高）' },
+    { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite（兼容备选）' },
+  ],
   selectedEngine: 'cuda', selectedLanguage: 'zh', selectedFormat: 'srt', selectedOutputLocation: 'selected',
+  selectedGeminiModel: 'gemini-3.1-flash-lite', geminiApiKeyConfigured: false, geminiStatus: '未配置 API Key',
+  isGeminiBusy: false, geminiSampleResult: '',
   translate: false, modelPath: '', modelStatus: '尚未加载模型', modelProgress: 0,
   modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
+  uiScale: 'medium',
   terminologyEnabled: false, developerDiagnostics: false, terminologyDirectory: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\terminology',
   terminologyPacks: [
     { id: 'game-vfx-course', name: 'Unity 游戏特效课程', description: '来自字幕评估报告的 Unity、MOBA 和游戏特效错词', enabled: true, priority: 90, termCount: 16, selected: true, terms: [
@@ -66,6 +78,7 @@ const mockState: AppState = {
   isScanningMedia: false,
   batchStatistics: { selectedCount: 0, knownDurationCount: 0, unknownDurationCount: 0, totalDurationSeconds: 0, processedDurationSeconds: 0, elapsedSeconds: 0, speed: 0, etaIsPartial: false, isEstimating: false },
   isRunning: false, isLoadingModel: false, canStart: false, jobs: [], sources: [], segments: [], logs: '',
+  canStartAiSubtitleOptimization: false, isAiRunning: false, aiBatchStatus: '等待字幕优化任务', aiBatchReportPath: '', aiBatchSummary: '',
   logFilePath: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\Logs\\whisper-desktop.log',
   captureDevices: [{ id: 'default', name: '默认麦克风' }], selectedCaptureDevice: 'default',
   liveStatus: '浏览器预览不读取本机录音设备',
@@ -81,11 +94,31 @@ class BrowserMockBridge implements DesktopBridge {
     if (action === 'initialize') {
       queueMicrotask(() => this.publish())
     } else if (action === 'updateSetting') {
-      const setting = payload as { name?: keyof AppState; value?: unknown }
-      if (setting?.name && setting.name in mockState) {
+      const setting = payload as { name?: string; value?: unknown }
+      if (setting?.name === 'geminiModel') {
+        mockState.selectedGeminiModel = String(setting.value || 'gemini-3.1-flash-lite')
+        this.publish()
+      } else if (setting?.name && setting.name in mockState) {
         ;(mockState as unknown as Record<string, unknown>)[setting.name] = setting.value
         this.publish()
       }
+    } else if (action === 'saveGeminiApiKey') {
+      mockState.geminiApiKeyConfigured = true
+      mockState.geminiStatus = 'API Key 已保存'
+      this.publish()
+    } else if (action === 'clearGeminiApiKey') {
+      mockState.geminiApiKeyConfigured = false
+      mockState.geminiStatus = '未配置 API Key'
+      mockState.geminiSampleResult = ''
+      this.publish()
+    } else if (action === 'testGeminiConnection') {
+      mockState.geminiStatus = mockState.geminiApiKeyConfigured ? '连接成功：浏览器预览' : '请先保存 Gemini API Key'
+      this.publish()
+    } else if (action === 'optimizeGeminiSample') {
+      const sample = payload as { text?: string }
+      mockState.geminiSampleResult = sample?.text ? `${sample.text.replace(/呃|嗯/g, '').trim()}\n\n说明：浏览器预览模拟结果` : ''
+      mockState.geminiStatus = mockState.geminiApiKeyConfigured ? '字幕优化试跑完成' : '请先保存 Gemini API Key'
+      this.publish()
     } else if (action === 'addFiles') {
       mockState.jobs = Array.from({ length: 14 }, (_, index) => ({
         id: `mock-${index}`, fileName: `示例视频-${index + 1}.mp4`, inputPath: `D:\\Media\\课程\\示例视频-${index + 1}.mp4`,
@@ -114,6 +147,13 @@ class BrowserMockBridge implements DesktopBridge {
       this.emit({ type: 'jobUpdate', payload: structuredClone(mockState.jobs[0]) })
       mockState.segments.forEach(segment => this.emit({ type: 'segmentAdded', payload: structuredClone(segment) }))
       this.emit({ type: 'logAdded', payload: { line: mockState.logs } })
+    } else if (action === 'startAiSubtitleOptimization') {
+      mockState.isAiRunning = false
+      mockState.canStartAiSubtitleOptimization = true
+      mockState.aiBatchStatus = 'AI 字幕优化完成：3 个文件，总成本约 ¥0.0180'
+      mockState.aiBatchReportPath = 'D:\\Media\\ProblemCases\\ai-batch-report-20260616-090000.md'
+      mockState.aiBatchSummary = 'Token 42000，输入 32000，输出 10000'
+      this.publish()
     } else if (action === 'startLive') {
       mockState.isLiveRunning = true
       mockState.canStartLive = false

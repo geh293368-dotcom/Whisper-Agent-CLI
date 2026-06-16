@@ -72,10 +72,16 @@ export interface AppState {
   languages: Option[]
   formats: Option[]
   outputLocations: Option[]
+  geminiModels: Option[]
   selectedEngine: string
   selectedLanguage: string
   selectedFormat: string
   selectedOutputLocation: string
+  selectedGeminiModel: string
+  geminiApiKeyConfigured: boolean
+  geminiStatus: string
+  isGeminiBusy: boolean
+  geminiSampleResult: string
   translate: boolean
   modelPath: string
   modelStatus: string
@@ -83,6 +89,7 @@ export interface AppState {
   modelProgressIndeterminate: boolean
   modelLoadElapsedSeconds: number
   autoLoadModel: boolean
+  uiScale: 'small' | 'medium' | 'large'
   terminologyEnabled: boolean
   developerDiagnostics: boolean
   terminologyDirectory: string
@@ -94,6 +101,11 @@ export interface AppState {
   isRunning: boolean
   isLoadingModel: boolean
   canStart: boolean
+  canStartAiSubtitleOptimization: boolean
+  isAiRunning: boolean
+  aiBatchStatus: string
+  aiBatchReportPath: string
+  aiBatchSummary: string
   canStartLive: boolean
   jobs: Job[]
   sources: SourceFolder[]

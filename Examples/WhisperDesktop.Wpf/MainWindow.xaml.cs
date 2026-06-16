@@ -17,6 +17,7 @@ public sealed record LanguageOption(string Id, string Name, eLanguage Value);
 public sealed record OutputFormatOption(string Id, string Name, OutputFormat Value);
 public sealed record EngineOption(string Id, string Name, Func<ITranscriptionEngine> Create);
 public sealed record OutputLocationOption(string Id, string Name, OutputLocationMode Value, string Description);
+public sealed record GeminiModelOption(string Id, string Name);
 
 public enum OutputLocationMode
 {
@@ -40,16 +41,27 @@ public partial class MainWindow : Window
     readonly List<SubtitlePreviewItem> previewSegments = [];
     readonly List<LiveSubtitleItem> liveSegments = [];
     readonly List<CaptureDeviceOption> captureDevices = [];
+    readonly AppSettingsStore settingsStore = new();
+    readonly GeminiApiKeyStore geminiApiKeyStore = new();
+    readonly GeminiModelClient geminiClient = new();
+    readonly AiSubtitleOptimizationService aiSubtitleService;
     readonly TerminologyService terminologyService = new();
     IReadOnlyList<TerminologyPack> terminologyPacks = [];
     readonly IReadOnlyList<EngineOption> engines;
     readonly IReadOnlyList<LanguageOption> languages;
     readonly IReadOnlyList<OutputFormatOption> outputFormats;
     readonly IReadOnlyList<OutputLocationOption> outputLocations;
+    readonly IReadOnlyList<GeminiModelOption> geminiModels =
+    [
+        new(GeminiModelClient.DefaultModel, "Gemini 3.1 Flash-Lite（低成本，推荐）"),
+        new("gemini-3.5-flash", "Gemini 3.5 Flash（更强，成本更高）"),
+        new("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite（兼容备选）"),
+    ];
 
     ITranscriptionEngine transcription;
     iMediaFoundation? captureMediaFoundation;
     CancellationTokenSource? operationCancellation;
+    CancellationTokenSource? aiCancellation;
     CancellationTokenSource? durationScanCancellation;
     CancellationTokenSource? liveCancellation;
     readonly LiveTranscriptionService liveTranscription = new();
@@ -81,9 +93,18 @@ public partial class MainWindow : Window
     bool liveTranscribing;
     bool liveStalled;
     bool translate;
+    string uiScale = "medium";
+    string selectedGeminiModel = GeminiModelClient.DefaultModel;
+    string geminiStatus = "未配置 API Key";
+    string geminiSampleResult = string.Empty;
+    string aiBatchStatus = "等待字幕优化任务";
+    string aiBatchReportPath = string.Empty;
+    string aiBatchSummary = string.Empty;
     bool terminologyEnabled;
     bool developerDiagnostics;
     bool terminologySelectionConfigured;
+    bool isGeminiBusy;
+    bool isAiRunning;
     Stopwatch? batchStopwatch;
     Stopwatch? modelLoadStopwatch;
     Stopwatch? liveStopwatch;
@@ -132,6 +153,7 @@ public partial class MainWindow : Window
         selectedLanguage = languages[0];
         selectedOutputFormat = outputFormats[0];
         selectedOutputLocation = outputLocations[0];
+        aiSubtitleService = new AiSubtitleOptimizationService(geminiClient);
 
         liveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         liveTimer.Tick += (_, _) => SendPatch(new { liveElapsedSeconds = liveStopwatch?.Elapsed.TotalSeconds ?? 0 });
@@ -145,6 +167,7 @@ public partial class MainWindow : Window
         };
 
         LoadConfig();
+        geminiStatus = geminiApiKeyStore.IsConfigured ? "API Key 已配置" : "未配置 API Key";
         transcription = selectedEngine.Create();
         logOutput = AppLogger.StartSession(selectedEngine.Name);
         LoadTerminologyPacks();
@@ -236,6 +259,12 @@ public partial class MainWindow : Window
             case "openTerminologyFolder": OpenTerminologyFolder(); break;
             case "refreshTerminology": LoadTerminologyPacks(); PublishState(); break;
             case "setTerminologyPackSelected": SetTerminologyPackSelected(command.Payload); break;
+            case "saveGeminiApiKey": SaveGeminiApiKey(command.Payload); break;
+            case "clearGeminiApiKey": ClearGeminiApiKey(); break;
+            case "testGeminiConnection": await TestGeminiConnectionAsync(); break;
+            case "optimizeGeminiSample": await OptimizeGeminiSampleAsync(command.Payload); break;
+            case "startAiSubtitleOptimization": await StartAiSubtitleOptimizationAsync(); break;
+            case "stopAiSubtitleOptimization": StopAiSubtitleOptimization(); break;
         }
     }
 
@@ -570,6 +599,12 @@ public partial class MainWindow : Window
                 if (!isRunning && !isLiveRunning && !isLivePreparing)
                     translate = value.GetBoolean() && selectedLanguage.Id != "en";
                 break;
+            case "uiScale":
+                uiScale = NormalizeUiScale(value.GetString());
+                break;
+            case "geminiModel":
+                selectedGeminiModel = NormalizeGeminiModel(value.GetString());
+                break;
             case "terminologyEnabled":
                 terminologyEnabled = value.GetBoolean();
                 break;
@@ -598,6 +633,221 @@ public partial class MainWindow : Window
         SaveConfig();
         PublishState();
     }
+
+    void SaveGeminiApiKey(JsonElement payload)
+    {
+        string? apiKey = payload.TryGetProperty("apiKey", out JsonElement value) ? value.GetString() : null;
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            SendError("Gemini API Key 不能为空。");
+            return;
+        }
+
+        geminiApiKeyStore.Save(apiKey);
+        geminiStatus = "API Key 已保存";
+        AppendLog("Gemini", "API Key 已保存到 Windows 凭据管理器");
+        PublishState();
+    }
+
+    void ClearGeminiApiKey()
+    {
+        geminiApiKeyStore.Clear();
+        geminiStatus = "未配置 API Key";
+        geminiSampleResult = string.Empty;
+        AppendLog("Gemini", "API Key 已清除");
+        PublishState();
+    }
+
+    async Task TestGeminiConnectionAsync()
+    {
+        if (isGeminiBusy)
+            return;
+
+        string? apiKey = geminiApiKeyStore.Read();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            SendError("请先保存 Gemini API Key。");
+            return;
+        }
+
+        isGeminiBusy = true;
+        geminiStatus = "正在测试连接...";
+        SendPatch(CreateGeminiPatch());
+        try
+        {
+            GeminiTestResult result = await geminiClient.TestConnectionAsync(apiKey, selectedGeminiModel, CancellationToken.None);
+            geminiStatus = result.Ok ? $"连接成功：{result.Message}" : $"连接返回异常：{result.Message}";
+            AppendLog("Gemini", $"连接测试完成：{geminiStatus}");
+        }
+        catch (Exception ex)
+        {
+            geminiStatus = "连接测试失败";
+            AppendLog("Gemini", "连接测试失败", ex, "ERROR");
+            SendError(ex.Message);
+        }
+        finally
+        {
+            isGeminiBusy = false;
+            SendPatch(CreateGeminiPatch());
+        }
+    }
+
+    async Task OptimizeGeminiSampleAsync(JsonElement payload)
+    {
+        if (isGeminiBusy)
+            return;
+
+        string? sourceText = payload.TryGetProperty("text", out JsonElement value) ? value.GetString() : null;
+        if (string.IsNullOrWhiteSpace(sourceText))
+        {
+            SendError("请输入一条字幕文本用于试跑。");
+            return;
+        }
+
+        string? apiKey = geminiApiKeyStore.Read();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            SendError("请先保存 Gemini API Key。");
+            return;
+        }
+
+        isGeminiBusy = true;
+        geminiStatus = "正在优化试跑字幕...";
+        geminiSampleResult = string.Empty;
+        SendPatch(CreateGeminiPatch());
+        try
+        {
+            SubtitleOptimizationResult result = await geminiClient.OptimizeSubtitleTextAsync(
+                apiKey,
+                selectedGeminiModel,
+                sourceText.Trim(),
+                selectedLanguage.Name,
+                CancellationToken.None);
+            geminiSampleResult = string.IsNullOrWhiteSpace(result.Notes)
+                ? result.OptimizedText
+                : $"{result.OptimizedText}\n\n说明：{result.Notes}";
+            geminiStatus = "字幕优化试跑完成";
+            AppendLog("Gemini", "字幕优化试跑完成");
+        }
+        catch (Exception ex)
+        {
+            geminiStatus = "字幕优化试跑失败";
+            AppendLog("Gemini", "字幕优化试跑失败", ex, "ERROR");
+            SendError(ex.Message);
+        }
+        finally
+        {
+            isGeminiBusy = false;
+            SendPatch(CreateGeminiPatch());
+        }
+    }
+
+    object CreateGeminiPatch() => new
+    {
+        selectedGeminiModel,
+        geminiApiKeyConfigured = geminiApiKeyStore.IsConfigured,
+        geminiStatus,
+        isGeminiBusy,
+        geminiSampleResult,
+    };
+
+    async Task StartAiSubtitleOptimizationAsync()
+    {
+        if (!CanStartAiSubtitleOptimization)
+            return;
+
+        string? apiKey = geminiApiKeyStore.Read();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            SendError("请先在“模型与设置”中保存 Gemini API Key。");
+            return;
+        }
+
+        TranscriptionJob[] selectedJobs = jobs
+            .Where(job => job.IsSelected && File.Exists(job.InputPath))
+            .ToArray();
+        if (selectedJobs.Length == 0)
+        {
+            SendError("请先选择需要优化评分的视频任务。");
+            return;
+        }
+
+        List<AiSubtitleInputPair> pairs = AiSubtitleOptimizationService.DiscoverPairs(selectedJobs.Select(job => job.InputPath));
+        if (pairs.Count == 0)
+        {
+            SendError("没有找到同名 SRT 字幕。请确认视频旁边存在同名 .srt 文件。");
+            return;
+        }
+
+        aiCancellation?.Dispose();
+        aiCancellation = new CancellationTokenSource();
+        isAiRunning = true;
+        aiBatchStatus = $"正在准备 AI 字幕优化：{pairs.Count} 个文件";
+        aiBatchReportPath = string.Empty;
+        aiBatchSummary = string.Empty;
+        AppendLog("AI 字幕", $"开始优化并评分 {pairs.Count} 个字幕文件，模型 {selectedGeminiModel}");
+        SendPatch(CreateAiSubtitlePatch());
+
+        try
+        {
+            ActiveTerminology activeTerminology = terminologyEnabled
+                ? terminologyService.BuildActiveTerminology(terminologyPacks, selectedTerminologyPackIds)
+                : new ActiveTerminology([], null, 0, []);
+            var progress = new Progress<AiSubtitleProgress>(value =>
+            {
+                aiBatchStatus = value.Message;
+                if (!string.IsNullOrWhiteSpace(value.ReportPath))
+                    aiBatchReportPath = value.ReportPath;
+                SendPatch(CreateAiSubtitlePatch());
+            });
+            AiSubtitleBatchReport report = await aiSubtitleService.OptimizeAndEvaluateAsync(
+                selectedJobs.Select(job => job.InputPath).ToArray(),
+                apiKey,
+                selectedGeminiModel,
+                selectedLanguage.Name,
+                activeTerminology.InitialPrompt ?? string.Empty,
+                progress,
+                aiCancellation.Token);
+            aiBatchStatus = $"AI 字幕优化完成：{report.FileCount} 个文件，总成本约 ¥{report.EstimatedCostCny:F4}";
+            aiBatchReportPath = report.ReportMarkdownPath;
+            aiBatchSummary = $"Token {report.Usage.TotalTokens}，输入 {report.Usage.PromptTokens}，输出 {report.Usage.OutputTokens}";
+            AppendLog("AI 字幕", $"{aiBatchStatus}；报告 {report.ReportMarkdownPath}");
+        }
+        catch (OperationCanceledException)
+        {
+            aiBatchStatus = "AI 字幕优化已取消";
+            AppendLog("AI 字幕", "AI 字幕优化已取消", level: "WARN");
+        }
+        catch (Exception ex)
+        {
+            aiBatchStatus = "AI 字幕优化失败";
+            AppendLog("AI 字幕", "AI 字幕优化失败", ex, "ERROR");
+            SendError(ex.Message);
+        }
+        finally
+        {
+            isAiRunning = false;
+            SendPatch(CreateAiSubtitlePatch());
+        }
+    }
+
+    void StopAiSubtitleOptimization()
+    {
+        if (!isAiRunning)
+            return;
+        aiBatchStatus = "正在取消 AI 字幕优化...";
+        aiCancellation?.Cancel();
+        SendPatch(CreateAiSubtitlePatch());
+    }
+
+    object CreateAiSubtitlePatch() => new
+    {
+        isAiRunning,
+        canStartAiSubtitleOptimization = CanStartAiSubtitleOptimization,
+        aiBatchStatus,
+        aiBatchReportPath,
+        aiBatchSummary,
+    };
 
     void SetTerminologyPackSelected(JsonElement payload)
     {
@@ -1075,7 +1325,16 @@ public partial class MainWindow : Window
             $"可识别总时长 {FormatDuration(totalDuration)}，文件大小 {FormatFileSize(SumFileSize(scannedJobs))}，耗时 {elapsed.TotalSeconds:F1} 秒");
     }
 
-    bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected && job.State != JobState.Skipped) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning;
+    bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected && job.State != JobState.Skipped) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning && !isAiRunning;
+
+    bool CanStartAiSubtitleOptimization => geminiApiKeyStore.IsConfigured
+        && jobs.Any(job => job.IsSelected && File.Exists(Path.ChangeExtension(job.InputPath, ".srt")))
+        && !isRunning
+        && !isLoadingModel
+        && !isScanningMedia
+        && !isLiveRunning
+        && !isLivePreparing
+        && !isAiRunning;
 
     bool CanStartLive => transcription.IsModelLoaded
         && File.Exists(modelPath)
@@ -1084,7 +1343,8 @@ public partial class MainWindow : Window
         && !isLoadingModel
         && !isScanningMedia
         && !isLiveRunning
-        && !isLivePreparing;
+        && !isLivePreparing
+        && !isAiRunning;
 
     object CreateBatchStatistics(bool updateEstimate = false)
     {
@@ -1255,6 +1515,7 @@ public partial class MainWindow : Window
             languages = languages.Select(item => new { item.Id, item.Name }),
             formats = outputFormats.Select(item => new { item.Id, item.Name }),
             outputLocations = outputLocations.Select(item => new { item.Id, item.Name, item.Description }),
+            geminiModels = geminiModels.Select(item => new { item.Id, item.Name }),
             selectedEngine = selectedEngine.Id,
             selectedLanguage = selectedLanguage.Id,
             selectedFormat = selectedOutputFormat.Id,
@@ -1266,6 +1527,12 @@ public partial class MainWindow : Window
             modelProgressIndeterminate,
             modelLoadElapsedSeconds,
             autoLoadModel,
+            uiScale,
+            selectedGeminiModel,
+            geminiApiKeyConfigured = geminiApiKeyStore.IsConfigured,
+            geminiStatus,
+            isGeminiBusy,
+            geminiSampleResult,
             terminologyEnabled,
             developerDiagnostics,
             terminologyDirectory = terminologyService.DirectoryPath,
@@ -1298,6 +1565,11 @@ public partial class MainWindow : Window
             isRunning,
             isLoadingModel,
             canStart = CanStart,
+            canStartAiSubtitleOptimization = CanStartAiSubtitleOptimization,
+            isAiRunning,
+            aiBatchStatus,
+            aiBatchReportPath,
+            aiBatchSummary,
             canStartLive = CanStartLive,
             jobs = jobs.Select(SerializeJob),
             sources = sourceFolders.Select(source => new
@@ -1382,7 +1654,7 @@ public partial class MainWindow : Window
 
     void OnWindowClosing(object? sender, CancelEventArgs e)
     {
-        if (isRunning || isLoadingModel || isScanningMedia || isLiveRunning || isLivePreparing)
+        if (isRunning || isLoadingModel || isScanningMedia || isLiveRunning || isLivePreparing || isAiRunning)
         {
             MessageBoxResult result = MessageBox.Show(this, "模型、媒体扫描、批量任务或实时字幕仍在运行，确定要退出吗？", "确认退出", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result == MessageBoxResult.No)
@@ -1391,6 +1663,7 @@ public partial class MainWindow : Window
                 return;
             }
             operationCancellation?.Cancel();
+            aiCancellation?.Cancel();
             durationScanCancellation?.Cancel();
             liveCancellation?.Cancel();
         }
@@ -1415,95 +1688,69 @@ public partial class MainWindow : Window
 
     private void LoadConfig()
     {
-        try
+        AppSettingsStore.AppConfig? config = settingsStore.Load((message, exception) =>
+            AppendLog("配置", message, exception, "ERROR"));
+        if (config is null)
+            return;
+
+        selectedEngine = engines.FirstOrDefault(e => e.Id == config.SelectedEngine) ?? selectedEngine;
+        selectedLanguage = languages.FirstOrDefault(l => l.Id == config.SelectedLanguage) ?? selectedLanguage;
+        selectedOutputFormat = outputFormats.FirstOrDefault(o => o.Id == config.SelectedFormat) ?? selectedOutputFormat;
+        selectedOutputLocation = outputLocations.FirstOrDefault(ol => ol.Id == config.SelectedOutputLocation) ?? selectedOutputLocation;
+        if (!string.IsNullOrWhiteSpace(config.OutputFolder))
+            outputFolder = config.OutputFolder;
+        translate = config.Translate;
+        modelPath = config.ModelPath;
+        autoLoadModel = config.AutoLoadModel;
+        uiScale = NormalizeUiScale(config.UiScale);
+        selectedGeminiModel = NormalizeGeminiModel(config.GeminiModel);
+        recentModels = config.RecentModels ?? [];
+        selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
+        terminologyEnabled = config.TerminologyEnabled;
+        developerDiagnostics = config.DeveloperDiagnostics;
+        if (config.SelectedTerminologyPacks is not null)
         {
-            string configPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "WhisperDesktop", "config.json");
-            if (File.Exists(configPath))
-            {
-                string json = File.ReadAllText(configPath);
-                var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
-                if (config is not null)
-                {
-                    selectedEngine = engines.FirstOrDefault(e => e.Id == config.SelectedEngine) ?? selectedEngine;
-                    selectedLanguage = languages.FirstOrDefault(l => l.Id == config.SelectedLanguage) ?? selectedLanguage;
-                    selectedOutputFormat = outputFormats.FirstOrDefault(o => o.Id == config.SelectedFormat) ?? selectedOutputFormat;
-                    selectedOutputLocation = outputLocations.FirstOrDefault(ol => ol.Id == config.SelectedOutputLocation) ?? selectedOutputLocation;
-                    outputFolder = config.OutputFolder;
-                    translate = config.Translate;
-                    modelPath = config.ModelPath;
-                    autoLoadModel = config.AutoLoadModel;
-                    recentModels = config.RecentModels ?? new();
-                    selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
-                    terminologyEnabled = config.TerminologyEnabled;
-                    developerDiagnostics = config.DeveloperDiagnostics;
-                    if (config.SelectedTerminologyPacks is not null)
-                    {
-                        selectedTerminologyPackIds = config.SelectedTerminologyPacks;
-                        terminologySelectionConfigured = true;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            AppendLog("配置", "加载配置失败", ex, "ERROR");
+            selectedTerminologyPackIds = config.SelectedTerminologyPacks.ToList();
+            terminologySelectionConfigured = true;
         }
     }
 
     private void SaveConfig()
     {
-        try
+        var config = new AppSettingsStore.AppConfig
         {
-            string configDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "WhisperDesktop");
-            Directory.CreateDirectory(configDirectory);
-            string configPath = Path.Combine(configDirectory, "config.json");
+            SelectedEngine = selectedEngine.Id,
+            SelectedLanguage = selectedLanguage.Id,
+            SelectedFormat = selectedOutputFormat.Id,
+            SelectedOutputLocation = selectedOutputLocation.Id,
+            OutputFolder = outputFolder,
+            Translate = translate,
+            ModelPath = modelPath,
+            AutoLoadModel = autoLoadModel,
+            UiScale = uiScale,
+            GeminiModel = selectedGeminiModel,
+            RecentModels = recentModels.ToList(),
+            SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
+            TerminologyEnabled = terminologyEnabled,
+            DeveloperDiagnostics = developerDiagnostics,
+            SelectedTerminologyPacks = selectedTerminologyPackIds.ToList(),
+        };
 
-            var config = new AppConfig
-            {
-                SelectedEngine = selectedEngine.Id,
-                SelectedLanguage = selectedLanguage.Id,
-                SelectedFormat = selectedOutputFormat.Id,
-                SelectedOutputLocation = selectedOutputLocation.Id,
-                OutputFolder = outputFolder,
-                Translate = translate,
-                ModelPath = modelPath,
-                AutoLoadModel = autoLoadModel,
-                RecentModels = recentModels,
-                SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
-                TerminologyEnabled = terminologyEnabled,
-                DeveloperDiagnostics = developerDiagnostics,
-                SelectedTerminologyPacks = selectedTerminologyPackIds,
-            };
-
-            string json = JsonSerializer.Serialize(config, JsonOptions);
-            File.WriteAllText(configPath, json);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("配置", "保存配置失败", ex, "ERROR");
-        }
+        settingsStore.Save(config, (message, exception) =>
+            AppendLog("配置", message, exception, "ERROR"));
     }
 
-    public sealed class AppConfig
+    static string NormalizeUiScale(string? value) => value switch
     {
-        public string SelectedEngine { get; set; } = "cuda";
-        public string SelectedLanguage { get; set; } = "zh";
-        public string SelectedFormat { get; set; } = "srt";
-        public string SelectedOutputLocation { get; set; } = "selected";
-        public string OutputFolder { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        public bool Translate { get; set; } = false;
-        public string ModelPath { get; set; } = string.Empty;
-        public bool AutoLoadModel { get; set; } = true;
-        public List<string> RecentModels { get; set; } = new();
-        public string? SelectedCaptureEndpoint { get; set; }
-        public bool TerminologyEnabled { get; set; } = false;
-        public bool DeveloperDiagnostics { get; set; } = false;
-        public List<string>? SelectedTerminologyPacks { get; set; }
-    }
+        "small" or "medium" or "large" => value,
+        _ => "medium",
+    };
+
+    static string NormalizeGeminiModel(string? value) => value switch
+    {
+        GeminiModelClient.DefaultModel or "gemini-3.5-flash" or "gemini-2.5-flash-lite" => value,
+        _ => GeminiModelClient.DefaultModel,
+    };
 
     sealed record HostCommand(string Action, JsonElement Payload);
 }
