@@ -164,6 +164,9 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
       : '预计完成时间 --'
   const completedCount = state.jobs.filter(job => job.selected && job.status === '完成').length
   const skippedCount = state.jobs.filter(job => job.status === '已跳过').length
+  const aiActionLabel = state.isAiRunning
+    ? '正在 AI 优化...'
+    : state.developerDiagnostics ? 'AI 优化并评分' : 'AI 优化'
   const formatCompactDuration = (seconds: number) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return '0 分钟'
     if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} 分钟`
@@ -276,7 +279,7 @@ function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }:
     </span></div>
       <div className="batch-actions">
         <button className="button" disabled={!state.isRunning && !state.isAiRunning} onClick={() => command(state.isAiRunning ? 'stopAiSubtitleOptimization' : 'stop')}>停止</button>
-        <button className="button" disabled={!state.canStartAiSubtitleOptimization && !state.isAiRunning} onClick={() => command(state.isAiRunning ? 'stopAiSubtitleOptimization' : 'startAiSubtitleOptimization')}>{state.isAiRunning ? '正在 AI 优化...' : 'AI 优化并评分'}</button>
+        <button className="button" disabled={!state.canStartAiSubtitleOptimization && !state.isAiRunning} onClick={() => command(state.isAiRunning ? 'stopAiSubtitleOptimization' : 'startAiSubtitleOptimization')}>{aiActionLabel}</button>
         <button className="button primary start" disabled={!state.canStart} onClick={() => command('start')}>{state.isRunning ? '正在转录...' : '开始转录'}</button>
       </div>
     </footer>

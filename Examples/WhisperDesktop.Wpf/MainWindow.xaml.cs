@@ -785,7 +785,8 @@ public partial class MainWindow : Window
         aiBatchStatus = $"正在准备 AI 字幕优化：{pairs.Count} 个文件";
         aiBatchReportPath = string.Empty;
         aiBatchSummary = string.Empty;
-        AppendLog("AI 字幕", $"开始优化并评分 {pairs.Count} 个字幕文件，模型 {selectedGeminiModel}");
+        string aiOperationName = developerDiagnostics ? "优化并评分" : "优化";
+        AppendLog("AI 字幕", $"开始{aiOperationName} {pairs.Count} 个字幕文件，模型 {selectedGeminiModel}");
         SendPatch(CreateAiSubtitlePatch());
 
         try
@@ -812,6 +813,7 @@ public partial class MainWindow : Window
             aiBatchReportPath = report.ReportMarkdownPath;
             aiBatchSummary = $"Token {report.Usage.TotalTokens}，输入 {report.Usage.PromptTokens}，输出 {report.Usage.OutputTokens}";
             AppendLog("AI 字幕", $"{aiBatchStatus}；报告 {report.ReportMarkdownPath}");
+            AppendAiSubtitleReportToLog(report);
         }
         catch (OperationCanceledException)
         {
@@ -821,7 +823,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             aiBatchStatus = "AI 字幕优化失败";
-            AppendLog("AI 字幕", "AI 字幕优化失败", ex, "ERROR");
+            AppendLog("AI 字幕", $"AI 字幕优化失败：{ex.Message}", ex, "ERROR");
             SendError(ex.Message);
         }
         finally
@@ -829,6 +831,43 @@ public partial class MainWindow : Window
             isAiRunning = false;
             SendPatch(CreateAiSubtitlePatch());
         }
+    }
+
+    void AppendAiSubtitleReportToLog(AiSubtitleBatchReport report)
+    {
+        double beforeAverage = report.Reports.Count == 0 ? 0 : report.Reports.Average(item => item.OverallScoreBefore);
+        double afterAverage = report.Reports.Count == 0 ? 0 : report.Reports.Average(item => item.OverallScoreAfter);
+        AppendLog(
+            "AI 字幕",
+            $"汇总：{report.FileCount} 个文件，平均评分 {beforeAverage:F1} -> {afterAverage:F1}，Token {report.Usage.TotalTokens}（输入 {report.Usage.PromptTokens} / 输出 {report.Usage.OutputTokens}），估算费用 ¥{report.EstimatedCostCny:F4}");
+
+        foreach (AiSubtitleFileReport item in report.Reports)
+        {
+            string name = Path.GetFileNameWithoutExtension(item.OriginalSubtitlePath);
+            AppendLog(
+                "AI 字幕",
+                $"{name}：评分 {item.OverallScoreBefore} -> {item.OverallScoreAfter}，修改 {item.ChangedCueCount}/{item.CueCount}，Token {item.Usage.TotalTokens}，费用 ¥{item.EstimatedCostCny:F4}，报告 {item.ReportMarkdownPath}");
+
+            if (!string.IsNullOrWhiteSpace(item.Summary))
+                AppendLog("AI 字幕", $"{name} 摘要：{TrimLogText(item.Summary, 180)}");
+
+            foreach (SubtitleQualityExample example in item.Examples.Take(3))
+            {
+                string reason = string.IsNullOrWhiteSpace(example.Reason) ? "模型未给出原因" : example.Reason;
+                AppendLog(
+                    "AI 字幕",
+                    $"{name} 示例 #{example.Index}：{TrimLogText(reason, 120)}；原文「{TrimLogText(example.Before, 80)}」=> 优化「{TrimLogText(example.After, 80)}」");
+            }
+
+            if (item.Risks.Count > 0)
+                AppendLog("AI 字幕", $"{name} 风险：{TrimLogText(string.Join("；", item.Risks.Take(3)), 180)}", level: "WARN");
+        }
+    }
+
+    static string TrimLogText(string value, int maxLength)
+    {
+        string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..Math.Max(0, maxLength - 1)] + "…";
     }
 
     void StopAiSubtitleOptimization()
