@@ -140,19 +140,20 @@ WPF 窗口会通过 WebView2 加载 React 前端界面。
 
 ### 5. 命令行运行 .NET 示例
 
-仓库中还包含基于 `WhisperNet` 的 .NET 示例。下面是常见运行方式。
+仓库中还包含基于 `WhisperNet` 和 `whisper.cpp` 后端的 .NET 10 命令行示例。下面是常见运行方式。
 
 #### 转录音频文件
 
 ```powershell
-dotnet run --project Examples\TranscribeCS\TranscribeCS.csproj -c Debug -p:Platform=x64 -- -m models\ggml-medium.bin -l zh -otxt .\sample.wav
+dotnet run --project Examples\TranscribeCS\TranscribeCS.csproj -c Debug -p:Platform=x64 -- --engine cuda -m models\ggml-medium.bin -l zh -osrt .\sample.wav
 ```
 
 说明：
 
+- `--engine cuda`：使用 whisper.cpp CUDA 后端；也可选 `cpu` 或兼容版 `d3d11`
 - `-m`：指定模型文件
 - `-l zh`：指定语言为中文
-- `-otxt`：同时输出 `.txt` 文本结果
+- `-osrt`：同时输出 `.srt` 字幕结果；也可选 `-otxt` 或 `-ovtt`
 
 #### 列出麦克风设备
 

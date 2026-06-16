@@ -4,6 +4,13 @@ using Whisper;
 
 namespace TranscribeCS
 {
+	enum eTranscribeEngine: byte
+	{
+		D3D11,
+		Cpu,
+		Cuda,
+	}
+
 	sealed record class CommandLineArgs
 	{
 		public int n_threads = Environment.ProcessorCount;
@@ -28,6 +35,7 @@ namespace TranscribeCS
 		public string? prompt = null;
 
 		public eLanguage language = eLanguage.English;
+		public eTranscribeEngine engine = eTranscribeEngine.D3D11;
 		public string model = string.Empty;
 		public readonly List<string> fileNames = new List<string>();
 
@@ -65,6 +73,15 @@ namespace TranscribeCS
 		static eLanguage parseLanguage( string lang ) =>
 			Library.languageFromCode( lang ) ?? throw new ArgumentException( $"Unknown language code \"{lang}\"" );
 
+		static eTranscribeEngine parseEngine( string value ) =>
+			value.ToLowerInvariant() switch
+			{
+				"d3d11" => eTranscribeEngine.D3D11,
+				"cpu" => eTranscribeEngine.Cpu,
+				"cuda" => eTranscribeEngine.Cuda,
+				_ => throw new ArgumentException( $"Unknown engine \"{value}\". Expected d3d11, cpu, or cuda." )
+			};
+
 		public CommandLineArgs( string[] argv )
 		{
 			for( int i = 0; i < argv.Length; i++ )
@@ -98,6 +115,7 @@ namespace TranscribeCS
 				else if( arg == "-pp" || arg == "--print-progress" ) print_progress = true;
 				else if( arg == "-nt" || arg == "--no-timestamps" ) no_timestamps = true;
 				else if( arg == "-l" || arg == "--language" ) language = parseLanguage( argv[ ++i ] );
+				else if( arg == "-e" || arg == "--engine" ) engine = parseEngine( argv[ ++i ] );
 				else if( arg == "--prompt" ) prompt = argv[ ++i ];
 				else if( arg == "-m" || arg == "--model" ) model = argv[ ++i ];
 				else if( arg == "-f" || arg == "--file" ) fileNames.Add( argv[ ++i ] );
@@ -139,6 +157,7 @@ namespace TranscribeCS
 			Console.WriteLine( "  -nc,      --no-colors     [{0,-7}] do not print colors", cstr( !print_colors ) );
 			Console.WriteLine( "  -nt,      --no-timestamps [{0,-7}] do not print timestamps", cstr( no_timestamps ) );
 			Console.WriteLine( "  -l LANG,  --language LANG [{0,-7}] spoken language", language.getCode() );
+			Console.WriteLine( "  -e NAME,  --engine NAME   [{0,-7}] inference engine: d3d11, cpu, or cuda", engine.ToString().ToLowerInvariant() );
 			Console.WriteLine( "            --prompt PROMPT [       ] initial prompt" );
 			Console.WriteLine( "  -m FNAME, --model FNAME   [{0,-7}] model path", model );
 			Console.WriteLine( "  -f FNAME, --file FNAME    [{0,-7}] path of the input audio file", "" );
