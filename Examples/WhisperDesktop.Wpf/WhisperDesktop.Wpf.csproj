@@ -9,6 +9,14 @@
     <Platforms>x64</Platforms>
     <AssemblyName>WhisperDesktop.Modern</AssemblyName>
     <RootNamespace>WhisperDesktop.Modern</RootNamespace>
+    <BuildWebFrontendOnBuild Condition="'$(BuildWebFrontendOnBuild)' == '' and '$(Configuration)' == 'Release'">true</BuildWebFrontendOnBuild>
+    <BuildWebFrontendOnBuild Condition="'$(BuildWebFrontendOnBuild)' == ''">false</BuildWebFrontendOnBuild>
+    <BuildWhisperCppBackendOnBuild Condition="'$(BuildWhisperCppBackendOnBuild)' == '' and '$(Configuration)' == 'Release'">true</BuildWhisperCppBackendOnBuild>
+    <BuildWhisperCppBackendOnBuild Condition="'$(BuildWhisperCppBackendOnBuild)' == ''">false</BuildWhisperCppBackendOnBuild>
+    <WhisperCppBackendFlavor Condition="'$(WhisperCppBackendFlavor)' == ''">all</WhisperCppBackendFlavor>
+    <WhisperCppBackendFreshConfigure Condition="'$(WhisperCppBackendFreshConfigure)' == '' and '$(Configuration)' == 'Release'">true</WhisperCppBackendFreshConfigure>
+    <WhisperCppBackendFreshConfigure Condition="'$(WhisperCppBackendFreshConfigure)' == ''">false</WhisperCppBackendFreshConfigure>
+    <WhisperCppBackendFreshArg Condition="'$(WhisperCppBackendFreshConfigure)' == 'true'">--fresh</WhisperCppBackendFreshArg>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\WhisperNet\WhisperNet.csproj" />
@@ -21,11 +29,35 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3967.48" />
   </ItemGroup>
-  <Target Name="BuildWhisperCppBackend" BeforeTargets="Build">
-    <Exec Command="&quot;$(MSBuildProjectDirectory)\..\..\Tools\build-whispercpp.cmd&quot;" />
+  <Target Name="BuildWhisperCppBackend" BeforeTargets="Build" Condition="'$(BuildWhisperCppBackendOnBuild)' == 'true'">
+    <Exec Command="&quot;$(MSBuildProjectDirectory)\..\..\Tools\build-whispercpp.cmd&quot; $(WhisperCppBackendFlavor) $(WhisperCppBackendFreshArg)" />
   </Target>
-  <Target Name="BuildWebFrontend" BeforeTargets="Build">
+  <Target Name="EnsureWhisperCppBackendForDebug" BeforeTargets="Build"
+          Condition="'$(BuildWhisperCppBackendOnBuild)' != 'true' and !Exists('$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cpu\bin\WhisperCppBackendCpu.dll')">
+    <Message Importance="high" Text="WhisperCppBackendCpu.dll was not found; building the CPU backend once for local Debug runs." />
+    <Exec Command="&quot;$(MSBuildProjectDirectory)\..\..\Tools\build-whispercpp.cmd&quot; cpu" />
+  </Target>
+  <Target Name="BuildWebFrontend" BeforeTargets="Build"
+          Condition="'$(BuildWebFrontendOnBuild)' == 'true' or !Exists('$(MSBuildProjectDirectory)\..\WhisperDesktop.Web\dist\index.html')">
     <Exec Command="&quot;$(MSBuildProjectDirectory)\..\..\Tools\build-webui.cmd&quot;" />
+  </Target>
+  <Target Name="GenerateBuildInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildTimestamp>$([System.DateTime]::Now.ToString('yyyy年MM月dd日 HH:mm:ss'))</BuildTimestamp>
+      <BuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</BuildInfoFile>
+    </PropertyGroup>
+    <ItemGroup>
+      <BuildInfoLines Include="// &lt;auto-generated /&gt;" />
+      <BuildInfoLines Include="namespace WhisperDesktop.Modern%3B" />
+      <BuildInfoLines Include="internal static class BuildInfo" />
+      <BuildInfoLines Include="{" />
+      <BuildInfoLines Include="    public const string BuildTime = &quot;$(BuildTimestamp)&quot;%3B" />
+      <BuildInfoLines Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(BuildInfoFile)" Lines="@(BuildInfoLines)" Overwrite="true" Encoding="UTF-8" />
+    <ItemGroup>
+      <Compile Include="$(BuildInfoFile)" />
+    </ItemGroup>
   </Target>
   <Target Name="CopyWebFrontend" AfterTargets="Build">
     <ItemGroup>
@@ -37,6 +69,13 @@
   </Target>
   <Target Name="CopyWhisperCppBackend" AfterTargets="Build">
     <Delete Files="$(OutDir)WhisperCppBackend.dll" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cpu\bin\WhisperCppBackendCpu.dll;&#xA;                       $(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cuda\bin\WhisperCppBackendCuda.dll;&#xA;                       $(CUDA_PATH)\bin\x64\cublas64_13.dll;&#xA;                       $(CUDA_PATH)\bin\x64\cublasLt64_13.dll;&#xA;                       $(CUDA_PATH)\bin\x64\cudart64_13.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <WhisperCppBackendFiles Include="$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cpu\bin\WhisperCppBackendCpu.dll" Condition="Exists('$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cpu\bin\WhisperCppBackendCpu.dll')" />
+      <WhisperCppBackendFiles Include="$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cuda\bin\WhisperCppBackendCuda.dll" Condition="Exists('$(MSBuildProjectDirectory)\..\..\Native\WhisperCppBackend\build-cuda\bin\WhisperCppBackendCuda.dll')" />
+      <WhisperCppBackendFiles Include="$(CUDA_PATH)\bin\x64\cublas64_13.dll" Condition="'$(CUDA_PATH)' != '' and Exists('$(CUDA_PATH)\bin\x64\cublas64_13.dll')" />
+      <WhisperCppBackendFiles Include="$(CUDA_PATH)\bin\x64\cublasLt64_13.dll" Condition="'$(CUDA_PATH)' != '' and Exists('$(CUDA_PATH)\bin\x64\cublasLt64_13.dll')" />
+      <WhisperCppBackendFiles Include="$(CUDA_PATH)\bin\x64\cudart64_13.dll" Condition="'$(CUDA_PATH)' != '' and Exists('$(CUDA_PATH)\bin\x64\cudart64_13.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WhisperCppBackendFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="'@(WhisperCppBackendFiles)' != ''" />
   </Target>
 </Project>

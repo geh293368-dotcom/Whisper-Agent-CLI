@@ -110,6 +110,9 @@ npm run build
 Tools\build-webui.cmd
 ```
 
+`Tools\build-webui.cmd` 会在缺少 `node_modules` 时自动执行 `npm ci`，也可以显式使用
+`Tools\build-webui.cmd --install` 重新安装依赖，或用 `--skip-install` 只构建。
+
 构建产物会输出到 `Examples\WhisperDesktop.Web\dist\`，WPF 项目的 MSBuild 目标会在编译时自动将其复制到输出目录的 `Web\` 子目录。
 
 > **开发模式**：可在 Web 目录执行 `npm run dev` 启动 Vite 开发服务器（默认 `localhost:5173`），
@@ -121,9 +124,25 @@ Tools\build-webui.cmd
 Tools\build-whispercpp.cmd
 ```
 
-此脚本会使用 CMake + Ninja 同时编译 CPU 和 CUDA 两个版本的后端 DLL：
+此脚本会使用 CMake + Ninja 编译后端 DLL。默认同时编译 CPU 和 CUDA，也可以只编译指定后端：
+
+```powershell
+Tools\build-whispercpp.cmd cpu
+Tools\build-whispercpp.cmd cuda
+Tools\build-whispercpp.cmd all --fresh
+Tools\build-whispercpp.cmd cuda --cuda-arch 89
+```
+
 - `WhisperCppBackendCpu.dll`
 - `WhisperCppBackendCuda.dll`
+
+普通 Debug 构建默认不会每次重建 Web 前端和 whisper.cpp 后端；只有缺少 `dist\index.html`
+或 CPU 后端 DLL 时才自动补一次。Release 与 `Tools\package-daily.cmd` 会显式执行完整 Web +
+CPU/CUDA 构建。如需手动强制，可使用：
+
+```powershell
+dotnet build Examples\WhisperDesktop.Wpf\WhisperDesktop.Wpf.csproj -c Debug -p:Platform=x64 -p:BuildWebFrontendOnBuild=true -p:BuildWhisperCppBackendOnBuild=true
+```
 
 ### 4. 运行桌面程序
 
@@ -182,23 +201,9 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 ## 界面与功能概览
 
 ### 批量字幕
-导入音频或视频文件，使用本地 GPU 批量生成字幕
+导入音频或视频文件，使用本地 GPU 批量生成字幕，并可继续调用本地 AI 做字幕优化
 
 ![批量字幕界面](images/batch-page.png)
-
----
-
-### 转录过程
-带进度显示和实时字幕预览的转录界面
-
-![转录过程](images/transcribing.png)
-
----
-
-### 模型与设置
-管理推理引擎（CUDA / CPU / D3D11）、模型文件以及语言配置
-
-![模型与设置](images/settings-page.png)
 
 ---
 
@@ -206,6 +211,20 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 从麦克风采集语音，逐句生成带时间戳的字幕
 
 ![实时字幕界面](images/live-page.png)
+
+---
+
+### 模型与设置
+管理推理引擎、模型文件、语言配置以及本地 OpenAI 兼容 AI Provider
+
+![模型与设置](images/settings-page.png)
+
+---
+
+### 关于页面
+查看当前版本、编译时间、运行配置和组件信息
+
+![关于页面](images/about-page.png)
 
 ---
 

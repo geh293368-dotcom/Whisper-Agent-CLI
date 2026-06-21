@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace WhisperDesktop.Modern.Services;
@@ -8,17 +10,38 @@ namespace WhisperDesktop.Modern.Services;
 internal sealed class AiSubtitleOptimizationService
 {
     const int ChunkSize = 100;
+    const int MaxGeminiRetryCount = 3;
     const decimal UsdToCny = 7.25m;
-    readonly GeminiModelClient geminiClient;
+    static readonly TimeSpan[] DefaultGeminiRetryDelays =
+    [
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+    ];
+    readonly Func<IAiSubtitleModelClient> modelClientFactory;
+    readonly IReadOnlyList<TimeSpan> geminiRetryDelays;
 
     static readonly JsonSerializerOptions ReportJsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
     };
 
-    public AiSubtitleOptimizationService(GeminiModelClient geminiClient)
+    public AiSubtitleOptimizationService(
+        IAiSubtitleModelClient modelClient,
+        IReadOnlyList<TimeSpan>? geminiRetryDelays = null)
+        : this(() => modelClient, geminiRetryDelays)
     {
-        this.geminiClient = geminiClient;
+    }
+
+    public AiSubtitleOptimizationService(
+        Func<IAiSubtitleModelClient> modelClientFactory,
+        IReadOnlyList<TimeSpan>? geminiRetryDelays = null)
+    {
+        this.modelClientFactory = modelClientFactory;
+        this.geminiRetryDelays = geminiRetryDelays is { Count: > 0 }
+            ? geminiRetryDelays
+            : DefaultGeminiRetryDelays;
     }
 
     public async Task<AiSubtitleBatchReport> OptimizeAndEvaluateAsync(
@@ -27,6 +50,7 @@ internal sealed class AiSubtitleOptimizationService
         string model,
         string languageName,
         string terminologyHint,
+        AiSubtitleOutputPolicy outputPolicy,
         IProgress<AiSubtitleProgress>? progress,
         CancellationToken cancellationToken)
     {
@@ -34,7 +58,9 @@ internal sealed class AiSubtitleOptimizationService
         if (pairs.Count == 0)
             throw new InvalidOperationException("没有找到可优化的同名 SRT 字幕。请先把视频和字幕放在同一目录，文件名保持一致。");
 
+        IAiSubtitleModelClient modelClient = modelClientFactory();
         var reports = new List<AiSubtitleFileReport>();
+        var failures = new List<AiSubtitleFailureReport>();
         GeminiUsage totalUsage = GeminiUsage.Empty;
         var startedAt = DateTimeOffset.Now;
         for (int i = 0; i < pairs.Count; i++)
@@ -42,24 +68,39 @@ internal sealed class AiSubtitleOptimizationService
             cancellationToken.ThrowIfCancellationRequested();
             AiSubtitleInputPair pair = pairs[i];
             progress?.Report(new AiSubtitleProgress($"正在优化 {pair.DisplayName} ({i + 1}/{pairs.Count})", i, pairs.Count, null));
-            AiSubtitleFileReport report = await OptimizeAndEvaluateFileAsync(
-                pair,
-                apiKey,
-                model,
-                languageName,
-                terminologyHint,
-                progress,
-                cancellationToken);
-            reports.Add(report);
-            totalUsage += report.Usage;
-            progress?.Report(new AiSubtitleProgress($"完成 {pair.DisplayName}，评分 {report.OverallScoreBefore} -> {report.OverallScoreAfter}", i + 1, pairs.Count, report.ReportMarkdownPath));
+            try
+            {
+                AiSubtitleFileReport report = await OptimizeAndEvaluateFileAsync(
+                    modelClient,
+                    pair,
+                    apiKey,
+                    model,
+                    languageName,
+                    terminologyHint,
+                    outputPolicy,
+                    progress,
+                    cancellationToken);
+                reports.Add(report);
+                totalUsage += report.Usage;
+                progress?.Report(new AiSubtitleProgress($"完成 {pair.DisplayName}，评分 {report.OverallScoreBefore} -> {report.OverallScoreAfter}", i + 1, pairs.Count, report.ReportMarkdownPath));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                AiSubtitleFailureReport failure = CreateFailureReport(pair, ex);
+                failures.Add(failure);
+                progress?.Report(new AiSubtitleProgress($"失败 {pair.DisplayName}：{failure.ErrorMessage}，已继续下一个文件", i + 1, pairs.Count, null));
+            }
         }
 
         string batchDirectory = GetCommonDirectory(pairs.Select(pair => pair.SubtitlePath));
-        string stamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss");
+        string stamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss-fff");
         string batchJsonPath = Path.Combine(batchDirectory, $"ai-batch-report-{stamp}.json");
         string batchMarkdownPath = Path.Combine(batchDirectory, $"ai-batch-report-{stamp}.md");
-        decimal costUsd = EstimateCostUsd(model, totalUsage);
+        decimal costUsd = EstimateCostUsd(modelClient, model, totalUsage);
         var batch = new AiSubtitleBatchReport(
             GeneratedAt: startedAt,
             Model: model,
@@ -69,6 +110,7 @@ internal sealed class AiSubtitleOptimizationService
             EstimatedCostUsd: costUsd,
             EstimatedCostCny: costUsd * UsdToCny,
             Reports: reports,
+            Failures: failures,
             ReportJsonPath: batchJsonPath,
             ReportMarkdownPath: batchMarkdownPath);
 
@@ -106,34 +148,53 @@ internal sealed class AiSubtitleOptimizationService
     }
 
     async Task<AiSubtitleFileReport> OptimizeAndEvaluateFileAsync(
+        IAiSubtitleModelClient modelClient,
         AiSubtitleInputPair pair,
         string apiKey,
         string model,
         string languageName,
         string terminologyHint,
+        AiSubtitleOutputPolicy outputPolicy,
         IProgress<AiSubtitleProgress>? progress,
         CancellationToken cancellationToken)
     {
+        var totalStopwatch = Stopwatch.StartNew();
         IReadOnlyList<ParsedSubtitleCue> originalCues = ParseSubRip(File.ReadAllText(pair.SubtitlePath));
         if (originalCues.Count == 0)
             throw new InvalidOperationException($"字幕文件为空或格式无法解析：{pair.SubtitlePath}");
 
+        int textCharCount = CountTextCharacters(originalCues);
         var optimizedTexts = originalCues.ToDictionary(cue => cue.Index, cue => cue.Text);
         var chunkSummaries = new List<string>();
         GeminiUsage usage = GeminiUsage.Empty;
         int chunkCount = (int)Math.Ceiling(originalCues.Count / (double)ChunkSize);
+        int retryCount = 0;
+        var optimizeStopwatch = Stopwatch.StartNew();
         for (int offset = 0; offset < originalCues.Count; offset += ChunkSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
             IReadOnlyList<ParsedSubtitleCue> chunk = originalCues.Skip(offset).Take(ChunkSize).ToArray();
-            progress?.Report(new AiSubtitleProgress($"正在优化 {pair.DisplayName}：第 {offset / ChunkSize + 1}/{chunkCount} 段", offset, originalCues.Count, null));
-            SubtitleChunkOptimizationResult optimizedChunk = await geminiClient.OptimizeSubtitleChunkAsync(
-                apiKey,
-                model,
-                chunk.Select(cue => new SubtitleTextItem(cue.Index, cue.Text)).ToArray(),
-                languageName,
-                terminologyHint,
+            int chunkNumber = offset / ChunkSize + 1;
+            progress?.Report(new AiSubtitleProgress($"正在优化 {pair.DisplayName}：第 {chunkNumber}/{chunkCount} 段", offset, originalCues.Count, null));
+            AiSubtitleRequestResult<SubtitleChunkOptimizationResult> chunkResult = await ExecuteGeminiWithRetryAsync(
+                async ct =>
+                {
+                    SubtitleChunkOptimizationResult result = await modelClient.OptimizeSubtitleChunkAsync(
+                        apiKey,
+                        model,
+                        chunk.Select(cue => new SubtitleTextItem(cue.Index, cue.Text)).ToArray(),
+                        languageName,
+                        terminologyHint,
+                        ct);
+                    ValidateOptimizedChunkResult(chunk, result);
+                    return result;
+                },
+                $"{pair.DisplayName} 第 {chunkNumber}/{chunkCount} 段",
+                chunkNumber,
+                progress,
                 cancellationToken);
+            retryCount += chunkResult.RetryCount;
+            SubtitleChunkOptimizationResult optimizedChunk = chunkResult.Value;
             usage += optimizedChunk.Usage ?? GeminiUsage.Empty;
             if (!string.IsNullOrWhiteSpace(optimizedChunk.Summary))
                 chunkSummaries.Add(optimizedChunk.Summary);
@@ -144,14 +205,13 @@ internal sealed class AiSubtitleOptimizationService
                     optimizedTexts[item.Index] = NormalizeSubtitleText(item.Text);
             }
         }
+        optimizeStopwatch.Stop();
 
         IReadOnlyList<ParsedSubtitleCue> optimizedCues = originalCues
             .Select(cue => cue with { Text = optimizedTexts.TryGetValue(cue.Index, out string? text) ? text : cue.Text })
             .ToArray();
-        string optimizedPath = Path.Combine(
-            Path.GetDirectoryName(pair.SubtitlePath)!,
-            $"{Path.GetFileNameWithoutExtension(pair.SubtitlePath)}.optimized.srt");
-        File.WriteAllText(optimizedPath, RenderSubRip(optimizedCues), new UTF8Encoding(true));
+        string optimizedContent = RenderSubRip(optimizedCues);
+        ValidateRenderedSubRip(optimizedContent, originalCues.Count, pair.SubtitlePath);
 
         var comparisonItems = originalCues.Zip(optimizedCues, (before, after) => new SubtitleComparisonItem(
             before.Index,
@@ -159,20 +219,43 @@ internal sealed class AiSubtitleOptimizationService
             FormatTime(before.End, ','),
             before.Text,
             after.Text)).ToArray();
-        SubtitleQualityEvaluation evaluation = await geminiClient.EvaluateSubtitleQualityAsync(
-            apiKey,
-            model,
-            pair.DisplayName,
-            comparisonItems,
-            languageName,
+        var evaluationStopwatch = Stopwatch.StartNew();
+        AiSubtitleRequestResult<SubtitleQualityEvaluation> evaluationResult = await ExecuteGeminiWithRetryAsync(
+            ct => modelClient.EvaluateSubtitleQualityAsync(
+                apiKey,
+                model,
+                pair.DisplayName,
+                comparisonItems,
+                languageName,
+                ct),
+            $"{pair.DisplayName} 评分",
+            null,
+            progress,
             cancellationToken);
+        evaluationStopwatch.Stop();
+        retryCount += evaluationResult.RetryCount;
+        SubtitleQualityEvaluation evaluation = evaluationResult.Value;
         usage += evaluation.Usage ?? GeminiUsage.Empty;
 
         int changed = comparisonItems.Count(item => !string.Equals(
             NormalizeForComparison(item.OriginalText),
             NormalizeForComparison(item.OptimizedText),
             StringComparison.Ordinal));
-        decimal costUsd = EstimateCostUsd(model, usage);
+        decimal costUsd = EstimateCostUsd(modelClient, model, usage);
+        AiSubtitleWriteResult writeResult = WriteOptimizedSubtitle(pair.SubtitlePath, optimizedContent, originalCues.Count, outputPolicy);
+        totalStopwatch.Stop();
+        var statistics = new AiSubtitleFileStatistics(
+            TextCharCount: textCharCount,
+            ChunkSize: ChunkSize,
+            OptimizeRequestCount: chunkCount,
+            EvaluationRequestCount: 1,
+            TotalRequestCount: chunkCount + 1,
+            OptimizeElapsedMs: optimizeStopwatch.ElapsedMilliseconds,
+            EvaluationElapsedMs: evaluationStopwatch.ElapsedMilliseconds,
+            TotalElapsedMs: totalStopwatch.ElapsedMilliseconds,
+            CharsPerSecond: CalculateRate(textCharCount, totalStopwatch.Elapsed),
+            CuesPerSecond: CalculateRate(originalCues.Count, totalStopwatch.Elapsed),
+            RetryCount: retryCount);
         string reportJsonPath = Path.Combine(
             Path.GetDirectoryName(pair.SubtitlePath)!,
             $"{Path.GetFileNameWithoutExtension(pair.SubtitlePath)}.ai-report.json");
@@ -182,11 +265,14 @@ internal sealed class AiSubtitleOptimizationService
         var report = new AiSubtitleFileReport(
             MediaPath: pair.MediaPath,
             OriginalSubtitlePath: pair.SubtitlePath,
-            OptimizedSubtitlePath: optimizedPath,
+            OptimizedSubtitlePath: writeResult.OutputPath,
+            OutputPolicy: outputPolicy,
+            BackupSubtitlePath: writeResult.BackupPath,
             ReportJsonPath: reportJsonPath,
             ReportMarkdownPath: reportMarkdownPath,
             CueCount: originalCues.Count,
             ChangedCueCount: changed,
+            Statistics: statistics,
             OverallScoreBefore: evaluation.OverallScoreBefore,
             OverallScoreAfter: evaluation.OverallScoreAfter,
             Scores: evaluation.Scores,
@@ -253,8 +339,16 @@ internal sealed class AiSubtitleOptimizationService
         builder.AppendLine($"# AI 字幕优化报告 - {Path.GetFileNameWithoutExtension(report.OriginalSubtitlePath)}");
         builder.AppendLine();
         builder.AppendLine($"- 字幕条数：{report.CueCount}");
+        builder.AppendLine($"- 正文字符：{report.Statistics.TextCharCount}");
+        builder.AppendLine($"- 请求次数：优化 {report.Statistics.OptimizeRequestCount} / 评分 {report.Statistics.EvaluationRequestCount} / 总计 {report.Statistics.TotalRequestCount}");
+        builder.AppendLine($"- 重试次数：{report.Statistics.RetryCount}");
+        builder.AppendLine($"- 耗时：总计 {FormatElapsed(report.Statistics.TotalElapsedMs)}，优化 {FormatElapsed(report.Statistics.OptimizeElapsedMs)}，评分 {FormatElapsed(report.Statistics.EvaluationElapsedMs)}");
+        builder.AppendLine($"- 速度：{FormatRate(report.Statistics.CharsPerSecond)} 字/秒，{FormatRate(report.Statistics.CuesPerSecond)} 条/秒");
         builder.AppendLine($"- 修改条数：{report.ChangedCueCount}");
         builder.AppendLine($"- 总分：{report.OverallScoreBefore} -> {report.OverallScoreAfter}");
+        builder.AppendLine($"- 输出策略：{FormatOutputPolicy(report.OutputPolicy)}");
+        if (!string.IsNullOrWhiteSpace(report.BackupSubtitlePath))
+            builder.AppendLine($"- 备份字幕：{report.BackupSubtitlePath}");
         builder.AppendLine($"- Token：输入 {report.Usage.PromptTokens} / 输出 {report.Usage.OutputTokens} / 总计 {report.Usage.TotalTokens}");
         builder.AppendLine($"- 估算成本：${report.EstimatedCostUsd:F6} / ¥{report.EstimatedCostCny:F4}");
         builder.AppendLine();
@@ -282,14 +376,29 @@ internal sealed class AiSubtitleOptimizationService
         builder.AppendLine($"- 生成时间：{report.GeneratedAt:yyyy-MM-dd HH:mm:ss zzz}");
         builder.AppendLine($"- 模型：{report.Model}");
         builder.AppendLine($"- 文件数：{report.FileCount}");
+        builder.AppendLine($"- 失败数：{report.FailedCount}");
         builder.AppendLine($"- Token：输入 {report.Usage.PromptTokens} / 输出 {report.Usage.OutputTokens} / 总计 {report.Usage.TotalTokens}");
         builder.AppendLine($"- 估算成本：${report.EstimatedCostUsd:F6} / ¥{report.EstimatedCostCny:F4}");
         builder.AppendLine();
-        builder.AppendLine("| 文件 | 字幕条数 | 修改条数 | 分数 | 成本 |");
-        builder.AppendLine("|---|---:|---:|---:|---:|");
+        builder.AppendLine("| 文件 | 输出 | 字符 | 请求 | 重试 | 耗时 | 速度 | 修改条数 | 分数 | 成本 |");
+        builder.AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
         foreach (AiSubtitleFileReport item in report.Reports)
         {
-            builder.AppendLine($"| {Path.GetFileName(item.OriginalSubtitlePath)} | {item.CueCount} | {item.ChangedCueCount} | {item.OverallScoreBefore} -> {item.OverallScoreAfter} | ¥{item.EstimatedCostCny:F4} |");
+            builder.AppendLine($"| {Path.GetFileName(item.OriginalSubtitlePath)} | {FormatOutputPolicy(item.OutputPolicy)} | {item.Statistics.TextCharCount} | {item.Statistics.TotalRequestCount} | {item.Statistics.RetryCount} | {FormatElapsed(item.Statistics.TotalElapsedMs)} | {FormatRate(item.Statistics.CharsPerSecond)} 字/秒 | {item.ChangedCueCount}/{item.CueCount} | {item.OverallScoreBefore} -> {item.OverallScoreAfter} | ¥{item.EstimatedCostCny:F4} |");
+        }
+
+        if (report.Failures.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("## 失败文件");
+            builder.AppendLine();
+            builder.AppendLine("| 文件 | 阶段 | 错误类型 | 分块 | 重试 | 错误 |");
+            builder.AppendLine("|---|---|---|---:|---:|---|");
+            foreach (AiSubtitleFailureReport failure in report.Failures)
+            {
+                string chunk = failure.FailedChunkIndex is null ? "-" : failure.FailedChunkIndex.Value.ToString();
+                builder.AppendLine($"| {Path.GetFileName(failure.SubtitlePath)} | {failure.Stage} | {FormatGeminiErrorCategory(failure.ErrorCategory)} | {chunk} | {failure.RetryCount} | {EscapeMarkdownTable(TrimForReport(failure.ErrorMessage, 120))} |");
+            }
         }
 
         return builder.ToString();
@@ -352,6 +461,256 @@ internal sealed class AiSubtitleOptimizationService
     static string NormalizeForComparison(string text) =>
         Regex.Replace(text, @"\s+", string.Empty);
 
+    static int CountTextCharacters(IEnumerable<ParsedSubtitleCue> cues)
+    {
+        int count = 0;
+        foreach (ParsedSubtitleCue cue in cues)
+        {
+            foreach (Rune rune in cue.Text.EnumerateRunes())
+            {
+                if (!Rune.IsWhiteSpace(rune))
+                    count++;
+            }
+        }
+
+        return count;
+    }
+
+    static double CalculateRate(int count, TimeSpan elapsed) =>
+        elapsed.TotalSeconds <= 0 ? 0 : count / elapsed.TotalSeconds;
+
+    async Task<AiSubtitleRequestResult<T>> ExecuteGeminiWithRetryAsync<T>(
+        Func<CancellationToken, Task<T>> action,
+        string operationName,
+        int? chunkIndex,
+        IProgress<AiSubtitleProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        int retryCount = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                T value = await action(cancellationToken);
+                return new AiSubtitleRequestResult<T>(value, retryCount);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (GeminiRequestException ex) when (ex.Retryable && retryCount < MaxGeminiRetryCount)
+            {
+                retryCount++;
+                TimeSpan delay = GetGeminiRetryDelay(retryCount);
+                progress?.Report(new AiSubtitleProgress(
+                    $"{operationName} 请求失败（{FormatGeminiErrorCategory(ex.Category)}），{delay.TotalSeconds:0} 秒后重试 {retryCount}/{MaxGeminiRetryCount}：{ex.Message}",
+                    0,
+                    0,
+                    null));
+                await Task.Delay(delay, cancellationToken);
+            }
+            catch (GeminiRequestException ex)
+            {
+                throw new AiSubtitleRequestFailedException(
+                    operationName,
+                    ex.Category,
+                    retryCount,
+                    chunkIndex,
+                    ex.Message,
+                    ex);
+            }
+        }
+    }
+
+    TimeSpan GetGeminiRetryDelay(int retryNumber)
+    {
+        int index = Math.Clamp(retryNumber - 1, 0, geminiRetryDelays.Count - 1);
+        return geminiRetryDelays[index];
+    }
+
+    static void ValidateOptimizedChunkResult(
+        IReadOnlyList<ParsedSubtitleCue> chunk,
+        SubtitleChunkOptimizationResult result)
+    {
+        HashSet<int> expected = chunk.Select(cue => cue.Index).ToHashSet();
+        var actual = new HashSet<int>();
+        foreach (SubtitleOptimizedTextItem item in result.Items)
+        {
+            if (!expected.Contains(item.Index))
+                throw GeminiModelClient.CreateContentException($"Gemini 返回了不属于当前分块的字幕 index：{item.Index}。");
+            if (!actual.Add(item.Index))
+                throw GeminiModelClient.CreateContentException($"Gemini 返回了重复字幕 index：{item.Index}。");
+            if (string.IsNullOrWhiteSpace(item.Text))
+                throw GeminiModelClient.CreateContentException($"Gemini 返回了空字幕 index：{item.Index}。");
+        }
+
+        if (actual.Count != expected.Count)
+        {
+            int[] missing = expected.Except(actual).OrderBy(index => index).Take(8).ToArray();
+            throw GeminiModelClient.CreateContentException($"Gemini 返回字幕条数不完整，缺少 index：{string.Join(", ", missing)}。");
+        }
+    }
+
+    static AiSubtitleFailureReport CreateFailureReport(AiSubtitleInputPair pair, Exception exception)
+    {
+        if (exception is AiSubtitleRequestFailedException requestFailure)
+        {
+            return new AiSubtitleFailureReport(
+                MediaPath: pair.MediaPath,
+                SubtitlePath: pair.SubtitlePath,
+                DisplayName: pair.DisplayName,
+                FailedAt: DateTimeOffset.Now,
+                Stage: requestFailure.Stage,
+                ErrorCategory: requestFailure.Category,
+                ErrorMessage: requestFailure.Message,
+                FailedChunkIndex: requestFailure.FailedChunkIndex,
+                RetryCount: requestFailure.RetryCount);
+        }
+
+        if (exception is GeminiRequestException geminiException)
+        {
+            return new AiSubtitleFailureReport(
+                MediaPath: pair.MediaPath,
+                SubtitlePath: pair.SubtitlePath,
+                DisplayName: pair.DisplayName,
+                FailedAt: DateTimeOffset.Now,
+                Stage: "Gemini 请求",
+                ErrorCategory: geminiException.Category,
+                ErrorMessage: geminiException.Message,
+                FailedChunkIndex: null,
+                RetryCount: 0);
+        }
+
+        return new AiSubtitleFailureReport(
+            MediaPath: pair.MediaPath,
+            SubtitlePath: pair.SubtitlePath,
+            DisplayName: pair.DisplayName,
+            FailedAt: DateTimeOffset.Now,
+            Stage: "文件处理",
+            ErrorCategory: exception is InvalidOperationException ? GeminiErrorCategory.Content : GeminiErrorCategory.Unknown,
+            ErrorMessage: exception.Message,
+            FailedChunkIndex: null,
+            RetryCount: 0);
+    }
+
+    internal static AiSubtitleWriteResult WriteOptimizedSubtitle(
+        string subtitlePath,
+        string optimizedContent,
+        int expectedCueCount,
+        AiSubtitleOutputPolicy outputPolicy)
+    {
+        string directory = Path.GetDirectoryName(subtitlePath)!;
+        string baseName = Path.GetFileNameWithoutExtension(subtitlePath);
+        string stamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss-fff");
+        string tempPath = Path.Combine(directory, $"{baseName}.ai-{stamp}-{Guid.NewGuid():N}.tmp");
+
+        if (outputPolicy == AiSubtitleOutputPolicy.PreserveOriginal)
+        {
+            string optimizedPath = Path.Combine(directory, $"{baseName}.optimized.srt");
+            try
+            {
+                WriteValidatedTempFile(tempPath, optimizedContent, expectedCueCount);
+                ReplaceOrMove(tempPath, optimizedPath, backupPath: null);
+                return new AiSubtitleWriteResult(optimizedPath, null);
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+        }
+
+        string backupPath = Path.Combine(directory, $"{baseName}.original-{stamp}.srt");
+        try
+        {
+            WriteValidatedTempFile(tempPath, optimizedContent, expectedCueCount);
+            ReplaceOrMove(tempPath, subtitlePath, backupPath);
+            return new AiSubtitleWriteResult(subtitlePath, backupPath);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+    }
+
+    static void WriteValidatedTempFile(string tempPath, string content, int expectedCueCount)
+    {
+        File.WriteAllText(tempPath, content, new UTF8Encoding(true));
+        ValidateRenderedSubRip(File.ReadAllText(tempPath), expectedCueCount, tempPath);
+    }
+
+    static void ReplaceOrMove(string sourcePath, string destinationPath, string? backupPath)
+    {
+        if (File.Exists(destinationPath))
+        {
+            File.Replace(sourcePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+            return;
+        }
+
+        File.Move(sourcePath, destinationPath);
+    }
+
+    static void ValidateRenderedSubRip(string content, int expectedCueCount, string path)
+    {
+        IReadOnlyList<ParsedSubtitleCue> cues = ParseSubRip(content);
+        if (cues.Count != expectedCueCount)
+            throw new InvalidOperationException($"优化字幕校验失败：{Path.GetFileName(path)} 条数 {cues.Count} 与原字幕 {expectedCueCount} 不一致。");
+
+        for (int i = 0; i < cues.Count; i++)
+        {
+            ParsedSubtitleCue cue = cues[i];
+            if (cue.Index != i + 1)
+                throw new InvalidOperationException($"优化字幕校验失败：{Path.GetFileName(path)} 第 {i + 1} 条编号不连续。");
+            if (cue.End <= cue.Begin)
+                throw new InvalidOperationException($"优化字幕校验失败：{Path.GetFileName(path)} 第 {cue.Index} 条时间轴无效。");
+        }
+    }
+
+    static string FormatOutputPolicy(AiSubtitleOutputPolicy policy) => policy switch
+    {
+        AiSubtitleOutputPolicy.OverwriteWithBackup => "覆盖原字幕并保留备份",
+        _ => "保留原字幕，输出优化副本",
+    };
+
+    static string FormatGeminiErrorCategory(GeminiErrorCategory category) => category switch
+    {
+        GeminiErrorCategory.UserConfiguration => "配置错误",
+        GeminiErrorCategory.RateLimited => "限流",
+        GeminiErrorCategory.TemporaryService => "临时服务错误",
+        GeminiErrorCategory.Network => "网络错误",
+        GeminiErrorCategory.Timeout => "请求超时",
+        GeminiErrorCategory.Content => "返回内容错误",
+        _ => "未知错误",
+    };
+
+    static string TrimForReport(string value, int maxLength)
+    {
+        string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..Math.Max(0, maxLength - 1)] + "…";
+    }
+
+    static string EscapeMarkdownTable(string value) => value.Replace("|", "\\|");
+
+    static string FormatElapsed(long milliseconds)
+    {
+        TimeSpan elapsed = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    static string FormatRate(double value) => value <= 0 ? "0.0" : value.ToString("F1");
+
+    static decimal EstimateCostUsd(IAiSubtitleModelClient modelClient, string model, GeminiUsage usage)
+    {
+        if (modelClient is OpenAiCompatibleModelClient)
+            return 0m;
+
+        return EstimateCostUsd(model, usage);
+    }
+
     static decimal EstimateCostUsd(string model, GeminiUsage usage)
     {
         (decimal inputPrice, decimal outputPrice) = model switch
@@ -366,20 +725,67 @@ internal sealed class AiSubtitleOptimizationService
     }
 }
 
+public enum AiSubtitleOutputPolicy
+{
+    PreserveOriginal,
+    OverwriteWithBackup,
+}
+
+internal sealed record AiSubtitleWriteResult(string OutputPath, string? BackupPath);
+
+internal sealed record AiSubtitleRequestResult<T>(T Value, int RetryCount);
+
+internal sealed class AiSubtitleRequestFailedException : Exception
+{
+    public AiSubtitleRequestFailedException(
+        string stage,
+        GeminiErrorCategory category,
+        int retryCount,
+        int? failedChunkIndex,
+        string message,
+        Exception innerException)
+        : base(message, innerException)
+    {
+        Stage = stage;
+        Category = category;
+        RetryCount = retryCount;
+        FailedChunkIndex = failedChunkIndex;
+    }
+
+    public string Stage { get; }
+    public GeminiErrorCategory Category { get; }
+    public int RetryCount { get; }
+    public int? FailedChunkIndex { get; }
+}
+
 internal sealed record AiSubtitleInputPair(string MediaPath, string SubtitlePath, string DisplayName);
 
 internal sealed record ParsedSubtitleCue(int Index, TimeSpan Begin, TimeSpan End, string Text);
 
 internal sealed record AiSubtitleProgress(string Message, int Completed, int Total, string? ReportPath);
 
+internal sealed record AiSubtitleFailureReport(
+    string MediaPath,
+    string SubtitlePath,
+    string DisplayName,
+    DateTimeOffset FailedAt,
+    string Stage,
+    GeminiErrorCategory ErrorCategory,
+    string ErrorMessage,
+    int? FailedChunkIndex,
+    int RetryCount);
+
 internal sealed record AiSubtitleFileReport(
     string MediaPath,
     string OriginalSubtitlePath,
     string OptimizedSubtitlePath,
+    AiSubtitleOutputPolicy OutputPolicy,
+    string? BackupSubtitlePath,
     string ReportJsonPath,
     string ReportMarkdownPath,
     int CueCount,
     int ChangedCueCount,
+    AiSubtitleFileStatistics Statistics,
     int OverallScoreBefore,
     int OverallScoreAfter,
     SubtitleQualityScores Scores,
@@ -392,6 +798,19 @@ internal sealed record AiSubtitleFileReport(
     decimal EstimatedCostUsd,
     decimal EstimatedCostCny);
 
+internal sealed record AiSubtitleFileStatistics(
+    int TextCharCount,
+    int ChunkSize,
+    int OptimizeRequestCount,
+    int EvaluationRequestCount,
+    int TotalRequestCount,
+    long OptimizeElapsedMs,
+    long EvaluationElapsedMs,
+    long TotalElapsedMs,
+    double CharsPerSecond,
+    double CuesPerSecond,
+    int RetryCount);
+
 internal sealed record AiSubtitleBatchReport(
     DateTimeOffset GeneratedAt,
     string Model,
@@ -401,5 +820,9 @@ internal sealed record AiSubtitleBatchReport(
     decimal EstimatedCostUsd,
     decimal EstimatedCostCny,
     IReadOnlyList<AiSubtitleFileReport> Reports,
+    IReadOnlyList<AiSubtitleFailureReport> Failures,
     string ReportJsonPath,
-    string ReportMarkdownPath);
+    string ReportMarkdownPath)
+{
+    public int FailedCount => Failures.Count;
+}

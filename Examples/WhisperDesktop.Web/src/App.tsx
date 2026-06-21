@@ -10,6 +10,10 @@ const uiScaleOptions = [
 ]
 
 const defaultGeminiSample = '嗯这个地方我们可以把这个粒子拖尾调得更自然一点。'
+const aiOutputPolicyDescriptions: Record<string, string> = {
+  overwriteBackup: '普通模式会覆盖同名 .srt，并在旁边保留 original 备份。',
+  preserve: '保留原 .srt，另存为 .optimized.srt，适合诊断和人工对比。',
+}
 
 const getFilename = (path: string) => {
   if (!path) return ''
@@ -18,10 +22,13 @@ const getFilename = (path: string) => {
 }
 
 const emptyState: AppState = {
-  engines: [], languages: [], formats: [], outputLocations: [], geminiModels: [], selectedEngine: '', selectedLanguage: '',
-  selectedFormat: '', selectedOutputLocation: '', selectedGeminiModel: 'gemini-3.1-flash-lite',
-  geminiApiKeyConfigured: false, geminiStatus: '未配置 API Key', isGeminiBusy: false, geminiSampleResult: '',
+  engines: [], languages: [], formats: [], outputLocations: [], aiModelProviders: [], geminiModels: [], aiSubtitleOutputPolicies: [], selectedEngine: '', selectedLanguage: '',
+  selectedFormat: '', selectedOutputLocation: '', selectedAiModelProvider: 'gemini', selectedGeminiModel: 'gemini-3.1-flash-lite',
+  selectedLocalAiModel: 'qwen3:8b', localAiBaseUrl: 'http://localhost:11434/v1/', selectedAiSubtitleOutputPolicy: 'overwriteBackup',
+  effectiveAiSubtitleOutputPolicy: 'overwriteBackup',
+  geminiApiKeyConfigured: false, isAiModelConfigured: false, geminiStatus: '未配置 API Key', isGeminiBusy: false, geminiSampleResult: '',
   translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
+  buildTime: '',
   modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
   uiScale: 'medium',
   terminologyEnabled: false, developerDiagnostics: false, terminologyDirectory: '', terminologyPacks: [],
@@ -372,6 +379,7 @@ function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
   const activeTerminologyPacks = state.terminologyPacks.filter(pack => pack.selected).map(pack => pack.name).join('、') || '未启用'
   const rows = [
     ['运行方式', '本地 Whisper / whisper.cpp / WebView2 / React'],
+    ['编译时间', state.buildTime || '未知'],
     ['推理引擎', selectedEngine],
     ['识别语言', selectedLanguage],
     ['当前模型', state.modelStatus || '尚未加载'],
@@ -412,7 +420,13 @@ function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
 function SettingsPage({ state, command, updateSetting }: { state: AppState; command: Command; updateSetting(name: string, value: unknown): void }) {
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [sampleText, setSampleText] = useState(defaultGeminiSample)
-  const canUseGemini = state.geminiApiKeyConfigured && !state.isGeminiBusy
+  const [localBaseUrlInput, setLocalBaseUrlInput] = useState(state.localAiBaseUrl || 'http://localhost:11434/v1/')
+  const [localModelInput, setLocalModelInput] = useState(state.selectedLocalAiModel || 'qwen3:8b')
+  const isLocalAi = state.selectedAiModelProvider === 'localOpenAi'
+  const canUseAi = state.isAiModelConfigured && !state.isGeminiBusy
+
+  useEffect(() => setLocalBaseUrlInput(state.localAiBaseUrl || 'http://localhost:11434/v1/'), [state.localAiBaseUrl])
+  useEffect(() => setLocalModelInput(state.selectedLocalAiModel || 'qwen3:8b'), [state.selectedLocalAiModel])
 
   return <div className="page narrow-page"><header className="page-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>管理推理引擎、模型以及识别语言配置。</p></div></header>
     <div className="settings-grid">
@@ -422,24 +436,35 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
       <section className="panel"><PanelHeading title="识别与翻译" caption="设置输入音频的实际语言" /><Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
         <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>
       </section>
-      <section className="panel ai-panel"><PanelHeading title="Gemini AI" caption="用于字幕优化的在线模型" />
-        <Field label="AI 模型"><Select disabled={state.isGeminiBusy} options={state.geminiModels} value={state.selectedGeminiModel || 'gemini-3.1-flash-lite'} onChange={value => updateSetting('geminiModel', value)} /></Field>
-        <Field label={state.geminiApiKeyConfigured ? '替换 API Key' : 'API Key'}><div className="input-action">
-          <input type="password" value={apiKeyInput} placeholder={state.geminiApiKeyConfigured ? '已配置，可输入新密钥替换' : '粘贴 Google AI Studio API Key'} onChange={e => setApiKeyInput(e.target.value)} />
-          <button className="button" disabled={state.isGeminiBusy || !apiKeyInput.trim()} onClick={() => { command('saveGeminiApiKey', { apiKey: apiKeyInput }); setApiKeyInput('') }}>保存</button>
-        </div></Field>
+      <section className="panel ai-panel"><PanelHeading title="AI 字幕模型" caption="用于字幕优化和质量评分" />
+        <Field label="AI Provider"><Select disabled={state.isGeminiBusy || state.isAiRunning} options={state.aiModelProviders} value={state.selectedAiModelProvider || 'gemini'} onChange={value => updateSetting('aiModelProvider', value)} /></Field>
+        {isLocalAi ? <>
+          <Field label="Base URL"><input value={localBaseUrlInput} placeholder="http://localhost:11434/v1/" onChange={e => setLocalBaseUrlInput(e.target.value)} onBlur={() => updateSetting('localAiBaseUrl', localBaseUrlInput)} /></Field>
+          <Field label="模型名"><input value={localModelInput} placeholder="qwen3:8b" onChange={e => setLocalModelInput(e.target.value)} onBlur={() => updateSetting('localAiModel', localModelInput)} /></Field>
+          <p className="field-note">Ollama 默认 OpenAI-compatible 地址是 http://localhost:11434/v1/，模型名填写本机已 pull 的 tag。</p>
+        </> : <>
+          <Field label="AI 模型"><Select disabled={state.isGeminiBusy} options={state.geminiModels} value={state.selectedGeminiModel || 'gemini-3.1-flash-lite'} onChange={value => updateSetting('geminiModel', value)} /></Field>
+          <Field label={state.geminiApiKeyConfigured ? '替换 API Key' : 'API Key'}><div className="input-action">
+            <input type="password" value={apiKeyInput} placeholder={state.geminiApiKeyConfigured ? '已配置，可输入新密钥替换' : '粘贴 Google AI Studio API Key'} onChange={e => setApiKeyInput(e.target.value)} />
+            <button className="button" disabled={state.isGeminiBusy || !apiKeyInput.trim()} onClick={() => { command('saveGeminiApiKey', { apiKey: apiKeyInput }); setApiKeyInput('') }}>保存</button>
+          </div></Field>
+        </>}
+        <Field label="AI 输出"><Select disabled={state.isAiRunning || state.isRunning} options={state.aiSubtitleOutputPolicies} value={state.selectedAiSubtitleOutputPolicy || 'overwriteBackup'} onChange={value => updateSetting('aiSubtitleOutputPolicy', value)} /></Field>
+        <p className="field-note">{state.developerDiagnostics
+          ? '开发者诊断已开启，本次会强制保留原字幕并输出 .optimized.srt。'
+          : aiOutputPolicyDescriptions[state.effectiveAiSubtitleOutputPolicy] || aiOutputPolicyDescriptions.overwriteBackup}</p>
         <div className="ai-actions">
-          <button className="button" disabled={!canUseGemini} onClick={() => command('testGeminiConnection')}>测试连接</button>
-          <button className="button" disabled={state.isGeminiBusy || !state.geminiApiKeyConfigured} onClick={() => command('clearGeminiApiKey')}>清除密钥</button>
+          <button className="button" disabled={!canUseAi} onClick={() => command('testAiModelConnection')}>测试连接</button>
+          {!isLocalAi && <button className="button" disabled={state.isGeminiBusy || !state.geminiApiKeyConfigured} onClick={() => command('clearGeminiApiKey')}>清除密钥</button>}
         </div>
-        <p className={`ai-status ${state.geminiApiKeyConfigured ? 'ready' : ''}`}>{state.isGeminiBusy ? '处理中...' : state.geminiStatus}</p>
+        <p className={`ai-status ${state.isAiModelConfigured ? 'ready' : ''}`}>{state.isGeminiBusy ? '处理中...' : state.geminiStatus}</p>
       </section>
       <section className="panel ai-panel"><PanelHeading title="优化试跑" caption="先验证一条字幕的润色效果" />
         <textarea className="sample-textarea" value={sampleText} onChange={e => setSampleText(e.target.value)} />
         <div className="ai-actions">
-          <button className="button primary" disabled={!canUseGemini || !sampleText.trim()} onClick={() => command('optimizeGeminiSample', { text: sampleText })}>优化试跑</button>
+          <button className="button primary" disabled={!canUseAi || !sampleText.trim()} onClick={() => command('optimizeAiSample', { text: sampleText })}>优化试跑</button>
         </div>
-        <div className="sample-result">{state.geminiSampleResult || '保存 API Key 后，可在这里试跑一条字幕。'}</div>
+        <div className="sample-result">{state.geminiSampleResult || '配置 AI Provider 后，可在这里试跑一条字幕。'}</div>
       </section>
       <section className="panel full"><PanelHeading title="推理模型" caption="推荐使用 CUDA 后端获得最高速度" />
         <Field label="推理引擎"><Select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} options={state.engines} value={state.selectedEngine} onChange={value => updateSetting('engine', value)} /></Field>

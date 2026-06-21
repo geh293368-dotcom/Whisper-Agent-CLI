@@ -73,6 +73,7 @@ public partial class App : Application
                 model,
                 "中文",
                 activeTerminology.InitialPrompt ?? "Unity 游戏特效课程；重点术语：Unity、粒子、拖尾、溶解、贴图、材质、模型、光晕、法阵、关键帧、压感",
+                AiSubtitleOutputPolicy.PreserveOriginal,
                 progress,
                 CancellationToken.None);
             AppLogger.Write("AI 字幕验证",

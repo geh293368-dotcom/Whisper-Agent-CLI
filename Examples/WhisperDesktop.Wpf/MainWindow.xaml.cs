@@ -3,6 +3,7 @@ using Microsoft.Win32;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
@@ -17,7 +18,9 @@ public sealed record LanguageOption(string Id, string Name, eLanguage Value);
 public sealed record OutputFormatOption(string Id, string Name, OutputFormat Value);
 public sealed record EngineOption(string Id, string Name, Func<ITranscriptionEngine> Create);
 public sealed record OutputLocationOption(string Id, string Name, OutputLocationMode Value, string Description);
+public sealed record AiModelProviderOption(string Id, string Name, string Description);
 public sealed record GeminiModelOption(string Id, string Name);
+public sealed record AiSubtitleOutputPolicyOption(string Id, string Name, AiSubtitleOutputPolicy Value, string Description);
 
 public enum OutputLocationMode
 {
@@ -44,6 +47,7 @@ public partial class MainWindow : Window
     readonly AppSettingsStore settingsStore = new();
     readonly GeminiApiKeyStore geminiApiKeyStore = new();
     readonly GeminiModelClient geminiClient = new();
+    readonly OpenAiCompatibleModelClient localAiClient = new();
     readonly AiSubtitleOptimizationService aiSubtitleService;
     readonly TerminologyService terminologyService = new();
     IReadOnlyList<TerminologyPack> terminologyPacks = [];
@@ -51,11 +55,21 @@ public partial class MainWindow : Window
     readonly IReadOnlyList<LanguageOption> languages;
     readonly IReadOnlyList<OutputFormatOption> outputFormats;
     readonly IReadOnlyList<OutputLocationOption> outputLocations;
+    readonly IReadOnlyList<AiModelProviderOption> aiModelProviders =
+    [
+        new("gemini", "Gemini（在线）", "使用 Google Gemini API"),
+        new("localOpenAi", "本地 OpenAI 兼容", "Ollama / llama.cpp / LM Studio"),
+    ];
     readonly IReadOnlyList<GeminiModelOption> geminiModels =
     [
         new(GeminiModelClient.DefaultModel, "Gemini 3.1 Flash-Lite（低成本，推荐）"),
         new("gemini-3.5-flash", "Gemini 3.5 Flash（更强，成本更高）"),
         new("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite（兼容备选）"),
+    ];
+    readonly IReadOnlyList<AiSubtitleOutputPolicyOption> aiSubtitleOutputPolicies =
+    [
+        new("overwriteBackup", "覆盖原字幕（保留备份）", AiSubtitleOutputPolicy.OverwriteWithBackup, "普通模式推荐，直接得到最终 .srt"),
+        new("preserve", "保留原字幕，输出优化副本", AiSubtitleOutputPolicy.PreserveOriginal, "诊断或审校时使用，生成 .optimized.srt"),
     ];
 
     ITranscriptionEngine transcription;
@@ -94,7 +108,11 @@ public partial class MainWindow : Window
     bool liveStalled;
     bool translate;
     string uiScale = "medium";
+    string selectedAiModelProvider = "gemini";
     string selectedGeminiModel = GeminiModelClient.DefaultModel;
+    string selectedLocalAiModel = OpenAiCompatibleModelClient.DefaultModel;
+    string localAiBaseUrl = OpenAiCompatibleModelClient.DefaultBaseUrl;
+    AiSubtitleOutputPolicy selectedAiSubtitleOutputPolicy = AiSubtitleOutputPolicy.OverwriteWithBackup;
     string geminiStatus = "未配置 API Key";
     string geminiSampleResult = string.Empty;
     string aiBatchStatus = "等待字幕优化任务";
@@ -118,6 +136,16 @@ public partial class MainWindow : Window
     string? selectedCaptureEndpoint;
     List<string> recentModels = [];
     List<string> selectedTerminologyPackIds = [];
+    AiSubtitleOutputPolicy EffectiveAiSubtitleOutputPolicy =>
+        developerDiagnostics ? AiSubtitleOutputPolicy.PreserveOriginal : selectedAiSubtitleOutputPolicy;
+
+    bool IsLocalAiProviderSelected => string.Equals(selectedAiModelProvider, "localOpenAi", StringComparison.OrdinalIgnoreCase);
+
+    string SelectedAiModel => IsLocalAiProviderSelected ? selectedLocalAiModel : selectedGeminiModel;
+
+    bool IsSelectedAiModelConfigured => IsLocalAiProviderSelected
+        ? !string.IsNullOrWhiteSpace(localAiBaseUrl) && !string.IsNullOrWhiteSpace(selectedLocalAiModel)
+        : geminiApiKeyStore.IsConfigured;
 
     public MainWindow()
     {
@@ -153,7 +181,7 @@ public partial class MainWindow : Window
         selectedLanguage = languages[0];
         selectedOutputFormat = outputFormats[0];
         selectedOutputLocation = outputLocations[0];
-        aiSubtitleService = new AiSubtitleOptimizationService(geminiClient);
+        aiSubtitleService = new AiSubtitleOptimizationService(GetSelectedAiModelClient);
 
         liveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         liveTimer.Tick += (_, _) => SendPatch(new { liveElapsedSeconds = liveStopwatch?.Elapsed.TotalSeconds ?? 0 });
@@ -167,7 +195,7 @@ public partial class MainWindow : Window
         };
 
         LoadConfig();
-        geminiStatus = geminiApiKeyStore.IsConfigured ? "API Key 已配置" : "未配置 API Key";
+        geminiStatus = CreateAiProviderStatus();
         transcription = selectedEngine.Create();
         logOutput = AppLogger.StartSession(selectedEngine.Name);
         LoadTerminologyPacks();
@@ -194,6 +222,17 @@ public partial class MainWindow : Window
 #endif
             WebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
+#if DEBUG
+            Uri? devServerUri = await TryGetWebDevServerUriAsync();
+            if (devServerUri is not null)
+            {
+                AppendLog("WebView2", $"连接 Vite 开发服务器：{devServerUri}");
+                WebView.Source = devServerUri;
+                RefreshCaptureDevices();
+                return;
+            }
+#endif
+
             string webRoot = Path.Combine(AppContext.BaseDirectory, "Web");
             if (!File.Exists(Path.Combine(webRoot, "index.html")))
                 throw new FileNotFoundException("React 前端资源不存在，请重新编译项目。", Path.Combine(webRoot, "index.html"));
@@ -211,6 +250,23 @@ public partial class MainWindow : Window
             MessageBox.Show(this, ex.Message, "WebView2 初始化失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+#if DEBUG
+    static async Task<Uri?> TryGetWebDevServerUriAsync()
+    {
+        var uri = new Uri("http://localhost:5173/");
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(400) };
+            using HttpResponseMessage response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead);
+            return response.IsSuccessStatusCode ? uri : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+#endif
 
     async void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -261,8 +317,14 @@ public partial class MainWindow : Window
             case "setTerminologyPackSelected": SetTerminologyPackSelected(command.Payload); break;
             case "saveGeminiApiKey": SaveGeminiApiKey(command.Payload); break;
             case "clearGeminiApiKey": ClearGeminiApiKey(); break;
-            case "testGeminiConnection": await TestGeminiConnectionAsync(); break;
-            case "optimizeGeminiSample": await OptimizeGeminiSampleAsync(command.Payload); break;
+            case "testGeminiConnection":
+            case "testAiModelConnection":
+                await TestAiModelConnectionAsync();
+                break;
+            case "optimizeGeminiSample":
+            case "optimizeAiSample":
+                await OptimizeAiSampleAsync(command.Payload);
+                break;
             case "startAiSubtitleOptimization": await StartAiSubtitleOptimizationAsync(); break;
             case "stopAiSubtitleOptimization": StopAiSubtitleOptimization(); break;
         }
@@ -602,8 +664,23 @@ public partial class MainWindow : Window
             case "uiScale":
                 uiScale = NormalizeUiScale(value.GetString());
                 break;
+            case "aiModelProvider":
+                selectedAiModelProvider = NormalizeAiModelProvider(value.GetString());
+                geminiStatus = CreateAiProviderStatus();
+                break;
             case "geminiModel":
                 selectedGeminiModel = NormalizeGeminiModel(value.GetString());
+                break;
+            case "localAiBaseUrl":
+                localAiBaseUrl = NormalizeLocalAiBaseUrl(value.GetString());
+                geminiStatus = CreateAiProviderStatus();
+                break;
+            case "localAiModel":
+                selectedLocalAiModel = NormalizeLocalAiModel(value.GetString());
+                geminiStatus = CreateAiProviderStatus();
+                break;
+            case "aiSubtitleOutputPolicy":
+                selectedAiSubtitleOutputPolicy = NormalizeAiSubtitleOutputPolicy(value.GetString());
                 break;
             case "terminologyEnabled":
                 terminologyEnabled = value.GetBoolean();
@@ -652,37 +729,39 @@ public partial class MainWindow : Window
     void ClearGeminiApiKey()
     {
         geminiApiKeyStore.Clear();
-        geminiStatus = "未配置 API Key";
+        geminiStatus = CreateAiProviderStatus();
         geminiSampleResult = string.Empty;
         AppendLog("Gemini", "API Key 已清除");
         PublishState();
     }
 
-    async Task TestGeminiConnectionAsync()
+    async Task TestAiModelConnectionAsync()
     {
         if (isGeminiBusy)
             return;
 
-        string? apiKey = geminiApiKeyStore.Read();
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (!IsSelectedAiModelConfigured)
         {
-            SendError("请先保存 Gemini API Key。");
+            SendError(CreateAiConfigurationMessage());
             return;
         }
 
+        IAiSubtitleModelClient modelClient = GetSelectedAiModelClient();
+        string apiKey = GetSelectedAiApiKey();
+        string model = SelectedAiModel;
         isGeminiBusy = true;
         geminiStatus = "正在测试连接...";
         SendPatch(CreateGeminiPatch());
         try
         {
-            GeminiTestResult result = await geminiClient.TestConnectionAsync(apiKey, selectedGeminiModel, CancellationToken.None);
+            GeminiTestResult result = await modelClient.TestConnectionAsync(apiKey, model, CancellationToken.None);
             geminiStatus = result.Ok ? $"连接成功：{result.Message}" : $"连接返回异常：{result.Message}";
-            AppendLog("Gemini", $"连接测试完成：{geminiStatus}");
+            AppendLog(modelClient.ProviderDisplayName, $"连接测试完成：{geminiStatus}");
         }
         catch (Exception ex)
         {
             geminiStatus = "连接测试失败";
-            AppendLog("Gemini", "连接测试失败", ex, "ERROR");
+            AppendLog(modelClient.ProviderDisplayName, "连接测试失败", ex, "ERROR");
             SendError(ex.Message);
         }
         finally
@@ -692,7 +771,7 @@ public partial class MainWindow : Window
         }
     }
 
-    async Task OptimizeGeminiSampleAsync(JsonElement payload)
+    async Task OptimizeAiSampleAsync(JsonElement payload)
     {
         if (isGeminiBusy)
             return;
@@ -704,22 +783,24 @@ public partial class MainWindow : Window
             return;
         }
 
-        string? apiKey = geminiApiKeyStore.Read();
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (!IsSelectedAiModelConfigured)
         {
-            SendError("请先保存 Gemini API Key。");
+            SendError(CreateAiConfigurationMessage());
             return;
         }
 
+        IAiSubtitleModelClient modelClient = GetSelectedAiModelClient();
+        string apiKey = GetSelectedAiApiKey();
+        string model = SelectedAiModel;
         isGeminiBusy = true;
         geminiStatus = "正在优化试跑字幕...";
         geminiSampleResult = string.Empty;
         SendPatch(CreateGeminiPatch());
         try
         {
-            SubtitleOptimizationResult result = await geminiClient.OptimizeSubtitleTextAsync(
+            SubtitleOptimizationResult result = await modelClient.OptimizeSubtitleTextAsync(
                 apiKey,
-                selectedGeminiModel,
+                model,
                 sourceText.Trim(),
                 selectedLanguage.Name,
                 CancellationToken.None);
@@ -727,12 +808,12 @@ public partial class MainWindow : Window
                 ? result.OptimizedText
                 : $"{result.OptimizedText}\n\n说明：{result.Notes}";
             geminiStatus = "字幕优化试跑完成";
-            AppendLog("Gemini", "字幕优化试跑完成");
+            AppendLog(modelClient.ProviderDisplayName, "字幕优化试跑完成");
         }
         catch (Exception ex)
         {
             geminiStatus = "字幕优化试跑失败";
-            AppendLog("Gemini", "字幕优化试跑失败", ex, "ERROR");
+            AppendLog(modelClient.ProviderDisplayName, "字幕优化试跑失败", ex, "ERROR");
             SendError(ex.Message);
         }
         finally
@@ -744,25 +825,58 @@ public partial class MainWindow : Window
 
     object CreateGeminiPatch() => new
     {
+        selectedAiModelProvider,
         selectedGeminiModel,
+        selectedLocalAiModel,
+        localAiBaseUrl,
         geminiApiKeyConfigured = geminiApiKeyStore.IsConfigured,
         geminiStatus,
         isGeminiBusy,
         geminiSampleResult,
+        isAiModelConfigured = IsSelectedAiModelConfigured,
     };
+
+    IAiSubtitleModelClient GetSelectedAiModelClient()
+    {
+        if (!IsLocalAiProviderSelected)
+            return geminiClient;
+
+        localAiClient.BaseUrl = localAiBaseUrl;
+        return localAiClient;
+    }
+
+    string GetSelectedAiApiKey() => IsLocalAiProviderSelected
+        ? OpenAiCompatibleModelClient.DefaultApiKey
+        : geminiApiKeyStore.Read() ?? string.Empty;
+
+    string CreateAiProviderStatus()
+    {
+        if (IsLocalAiProviderSelected)
+            return IsSelectedAiModelConfigured
+                ? $"本地 AI 已配置：{selectedLocalAiModel}"
+                : "请配置本地 AI Base URL 和模型名";
+
+        return geminiApiKeyStore.IsConfigured ? "API Key 已配置" : "未配置 API Key";
+    }
+
+    string CreateAiConfigurationMessage() => IsLocalAiProviderSelected
+        ? $"请确认 Ollama 已运行，并填写本地 AI Base URL 和模型名。默认 Base URL 是 {OpenAiCompatibleModelClient.DefaultBaseUrl}"
+        : "请先在“模型与设置”中保存 Gemini API Key。";
 
     async Task StartAiSubtitleOptimizationAsync()
     {
         if (!CanStartAiSubtitleOptimization)
             return;
 
-        string? apiKey = geminiApiKeyStore.Read();
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (!IsSelectedAiModelConfigured)
         {
-            SendError("请先在“模型与设置”中保存 Gemini API Key。");
+            SendError(CreateAiConfigurationMessage());
             return;
         }
 
+        IAiSubtitleModelClient modelClient = GetSelectedAiModelClient();
+        string apiKey = GetSelectedAiApiKey();
+        string aiModel = SelectedAiModel;
         TranscriptionJob[] selectedJobs = jobs
             .Where(job => job.IsSelected && File.Exists(job.InputPath))
             .ToArray();
@@ -786,7 +900,8 @@ public partial class MainWindow : Window
         aiBatchReportPath = string.Empty;
         aiBatchSummary = string.Empty;
         string aiOperationName = developerDiagnostics ? "优化并评分" : "优化";
-        AppendLog("AI 字幕", $"开始{aiOperationName} {pairs.Count} 个字幕文件，模型 {selectedGeminiModel}");
+        AiSubtitleOutputPolicy outputPolicy = EffectiveAiSubtitleOutputPolicy;
+        AppendLog("AI 字幕", $"开始{aiOperationName} {pairs.Count} 个字幕文件，Provider {modelClient.ProviderDisplayName}，模型 {aiModel}，输出策略 {FormatAiSubtitleOutputPolicy(outputPolicy)}");
         SendPatch(CreateAiSubtitlePatch());
 
         try
@@ -804,14 +919,20 @@ public partial class MainWindow : Window
             AiSubtitleBatchReport report = await aiSubtitleService.OptimizeAndEvaluateAsync(
                 selectedJobs.Select(job => job.InputPath).ToArray(),
                 apiKey,
-                selectedGeminiModel,
+                aiModel,
                 selectedLanguage.Name,
                 activeTerminology.InitialPrompt ?? string.Empty,
+                outputPolicy,
                 progress,
                 aiCancellation.Token);
-            aiBatchStatus = $"AI 字幕优化完成：{report.FileCount} 个文件，总成本约 ¥{report.EstimatedCostCny:F4}";
+            aiBatchStatus = report.FailedCount == 0
+                ? $"AI 字幕优化完成：{report.FileCount} 个文件，总成本约 ¥{report.EstimatedCostCny:F4}"
+                : $"AI 字幕优化完成：{report.FileCount} 个成功，{report.FailedCount} 个失败，总成本约 ¥{report.EstimatedCostCny:F4}";
             aiBatchReportPath = report.ReportMarkdownPath;
-            aiBatchSummary = $"Token {report.Usage.TotalTokens}，输入 {report.Usage.PromptTokens}，输出 {report.Usage.OutputTokens}";
+            int totalTextCharacters = report.Reports.Sum(item => item.Statistics.TextCharCount);
+            int totalRequestCount = report.Reports.Sum(item => item.Statistics.TotalRequestCount);
+            int totalRetryCount = report.Reports.Sum(item => item.Statistics.RetryCount) + report.Failures.Sum(item => item.RetryCount);
+            aiBatchSummary = $"正文 {totalTextCharacters} 字，请求 {totalRequestCount} 次，重试 {totalRetryCount} 次，失败 {report.FailedCount} 个，Token {report.Usage.TotalTokens}，输入 {report.Usage.PromptTokens}，输出 {report.Usage.OutputTokens}";
             AppendLog("AI 字幕", $"{aiBatchStatus}；报告 {report.ReportMarkdownPath}");
             AppendAiSubtitleReportToLog(report);
         }
@@ -837,16 +958,23 @@ public partial class MainWindow : Window
     {
         double beforeAverage = report.Reports.Count == 0 ? 0 : report.Reports.Average(item => item.OverallScoreBefore);
         double afterAverage = report.Reports.Count == 0 ? 0 : report.Reports.Average(item => item.OverallScoreAfter);
+        int totalTextCharacters = report.Reports.Sum(item => item.Statistics.TextCharCount);
+        int totalRequestCount = report.Reports.Sum(item => item.Statistics.TotalRequestCount);
+        int totalRetryCount = report.Reports.Sum(item => item.Statistics.RetryCount) + report.Failures.Sum(item => item.RetryCount);
+        long totalElapsedMs = report.Reports.Sum(item => item.Statistics.TotalElapsedMs);
         AppendLog(
             "AI 字幕",
-            $"汇总：{report.FileCount} 个文件，平均评分 {beforeAverage:F1} -> {afterAverage:F1}，Token {report.Usage.TotalTokens}（输入 {report.Usage.PromptTokens} / 输出 {report.Usage.OutputTokens}），估算费用 ¥{report.EstimatedCostCny:F4}");
+            $"汇总：成功 {report.FileCount} 个，失败 {report.FailedCount} 个，正文 {totalTextCharacters} 字，请求 {totalRequestCount} 次，重试 {totalRetryCount} 次，耗时 {FormatCompactElapsed(totalElapsedMs)}，平均评分 {beforeAverage:F1} -> {afterAverage:F1}，Token {report.Usage.TotalTokens}（输入 {report.Usage.PromptTokens} / 输出 {report.Usage.OutputTokens}），估算费用 ¥{report.EstimatedCostCny:F4}");
 
         foreach (AiSubtitleFileReport item in report.Reports)
         {
             string name = Path.GetFileNameWithoutExtension(item.OriginalSubtitlePath);
             AppendLog(
                 "AI 字幕",
-                $"{name}：评分 {item.OverallScoreBefore} -> {item.OverallScoreAfter}，修改 {item.ChangedCueCount}/{item.CueCount}，Token {item.Usage.TotalTokens}，费用 ¥{item.EstimatedCostCny:F4}，报告 {item.ReportMarkdownPath}");
+                $"{name}：正文 {item.Statistics.TextCharCount} 字，{item.CueCount} 条，请求 {item.Statistics.TotalRequestCount} 次，重试 {item.Statistics.RetryCount} 次，耗时 {FormatCompactElapsed(item.Statistics.TotalElapsedMs)}，速度 {item.Statistics.CharsPerSecond:F1} 字/秒，评分 {item.OverallScoreBefore} -> {item.OverallScoreAfter}，修改 {item.ChangedCueCount}/{item.CueCount}，输出 {FormatAiSubtitleOutputPolicy(item.OutputPolicy)}，Token {item.Usage.TotalTokens}，费用 ¥{item.EstimatedCostCny:F4}，报告 {item.ReportMarkdownPath}");
+
+            if (!string.IsNullOrWhiteSpace(item.BackupSubtitlePath))
+                AppendLog("AI 字幕", $"{name} 原字幕备份：{item.BackupSubtitlePath}");
 
             if (!string.IsNullOrWhiteSpace(item.Summary))
                 AppendLog("AI 字幕", $"{name} 摘要：{TrimLogText(item.Summary, 180)}");
@@ -862,6 +990,16 @@ public partial class MainWindow : Window
             if (item.Risks.Count > 0)
                 AppendLog("AI 字幕", $"{name} 风险：{TrimLogText(string.Join("；", item.Risks.Take(3)), 180)}", level: "WARN");
         }
+
+        foreach (AiSubtitleFailureReport failure in report.Failures)
+        {
+            string name = Path.GetFileNameWithoutExtension(failure.SubtitlePath);
+            string chunk = failure.FailedChunkIndex is null ? "" : $"，分块 {failure.FailedChunkIndex}";
+            AppendLog(
+                "AI 字幕",
+                $"{name}：失败，阶段 {failure.Stage}{chunk}，类型 {FormatGeminiErrorCategory(failure.ErrorCategory)}，重试 {failure.RetryCount} 次，错误 {TrimLogText(failure.ErrorMessage, 180)}",
+                level: "WARN");
+        }
     }
 
     static string TrimLogText(string value, int maxLength)
@@ -869,6 +1007,25 @@ public partial class MainWindow : Window
         string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
         return normalized.Length <= maxLength ? normalized : normalized[..Math.Max(0, maxLength - 1)] + "…";
     }
+
+    static string FormatCompactElapsed(long milliseconds)
+    {
+        TimeSpan elapsed = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    static string FormatGeminiErrorCategory(GeminiErrorCategory category) => category switch
+    {
+        GeminiErrorCategory.UserConfiguration => "配置错误",
+        GeminiErrorCategory.RateLimited => "限流",
+        GeminiErrorCategory.TemporaryService => "临时服务错误",
+        GeminiErrorCategory.Network => "网络错误",
+        GeminiErrorCategory.Timeout => "请求超时",
+        GeminiErrorCategory.Content => "返回内容错误",
+        _ => "未知错误",
+    };
 
     void StopAiSubtitleOptimization()
     {
@@ -1366,7 +1523,7 @@ public partial class MainWindow : Window
 
     bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected && job.State != JobState.Skipped) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning && !isAiRunning;
 
-    bool CanStartAiSubtitleOptimization => geminiApiKeyStore.IsConfigured
+    bool CanStartAiSubtitleOptimization => IsSelectedAiModelConfigured
         && jobs.Any(job => job.IsSelected && File.Exists(Path.ChangeExtension(job.InputPath, ".srt")))
         && !isRunning
         && !isLoadingModel
@@ -1554,12 +1711,15 @@ public partial class MainWindow : Window
             languages = languages.Select(item => new { item.Id, item.Name }),
             formats = outputFormats.Select(item => new { item.Id, item.Name }),
             outputLocations = outputLocations.Select(item => new { item.Id, item.Name, item.Description }),
+            aiModelProviders = aiModelProviders.Select(item => new { item.Id, item.Name, item.Description }),
             geminiModels = geminiModels.Select(item => new { item.Id, item.Name }),
+            aiSubtitleOutputPolicies = aiSubtitleOutputPolicies.Select(item => new { item.Id, item.Name, item.Description }),
             selectedEngine = selectedEngine.Id,
             selectedLanguage = selectedLanguage.Id,
             selectedFormat = selectedOutputFormat.Id,
             selectedOutputLocation = selectedOutputLocation.Id,
             translate,
+            buildTime = BuildInfo.BuildTime,
             modelPath,
             modelStatus,
             modelProgress,
@@ -1567,11 +1727,17 @@ public partial class MainWindow : Window
             modelLoadElapsedSeconds,
             autoLoadModel,
             uiScale,
+            selectedAiModelProvider,
             selectedGeminiModel,
+            selectedLocalAiModel,
+            localAiBaseUrl,
+            selectedAiSubtitleOutputPolicy = GetAiSubtitleOutputPolicyId(selectedAiSubtitleOutputPolicy),
+            effectiveAiSubtitleOutputPolicy = GetAiSubtitleOutputPolicyId(EffectiveAiSubtitleOutputPolicy),
             geminiApiKeyConfigured = geminiApiKeyStore.IsConfigured,
             geminiStatus,
             isGeminiBusy,
             geminiSampleResult,
+            isAiModelConfigured = IsSelectedAiModelConfigured,
             terminologyEnabled,
             developerDiagnostics,
             terminologyDirectory = terminologyService.DirectoryPath,
@@ -1742,7 +1908,11 @@ public partial class MainWindow : Window
         modelPath = config.ModelPath;
         autoLoadModel = config.AutoLoadModel;
         uiScale = NormalizeUiScale(config.UiScale);
+        selectedAiModelProvider = NormalizeAiModelProvider(config.AiModelProvider);
         selectedGeminiModel = NormalizeGeminiModel(config.GeminiModel);
+        selectedLocalAiModel = NormalizeLocalAiModel(config.LocalAiModel);
+        localAiBaseUrl = NormalizeLocalAiBaseUrl(config.LocalAiBaseUrl);
+        selectedAiSubtitleOutputPolicy = NormalizeAiSubtitleOutputPolicy(config.AiSubtitleOutputPolicy);
         recentModels = config.RecentModels ?? [];
         selectedCaptureEndpoint = config.SelectedCaptureEndpoint;
         terminologyEnabled = config.TerminologyEnabled;
@@ -1767,7 +1937,11 @@ public partial class MainWindow : Window
             ModelPath = modelPath,
             AutoLoadModel = autoLoadModel,
             UiScale = uiScale,
+            AiModelProvider = selectedAiModelProvider,
             GeminiModel = selectedGeminiModel,
+            LocalAiModel = selectedLocalAiModel,
+            LocalAiBaseUrl = localAiBaseUrl,
+            AiSubtitleOutputPolicy = GetAiSubtitleOutputPolicyId(selectedAiSubtitleOutputPolicy),
             RecentModels = recentModels.ToList(),
             SelectedCaptureEndpoint = selectedCaptureDevice?.Endpoint ?? selectedCaptureEndpoint,
             TerminologyEnabled = terminologyEnabled,
@@ -1785,10 +1959,41 @@ public partial class MainWindow : Window
         _ => "medium",
     };
 
+    static string NormalizeAiModelProvider(string? value) => value switch
+    {
+        "localOpenAi" => "localOpenAi",
+        _ => "gemini",
+    };
+
     static string NormalizeGeminiModel(string? value) => value switch
     {
         GeminiModelClient.DefaultModel or "gemini-3.5-flash" or "gemini-2.5-flash-lite" => value,
         _ => GeminiModelClient.DefaultModel,
+    };
+
+    static string NormalizeLocalAiModel(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? OpenAiCompatibleModelClient.DefaultModel : value.Trim();
+
+    static string NormalizeLocalAiBaseUrl(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? OpenAiCompatibleModelClient.DefaultBaseUrl : value.Trim();
+
+    static AiSubtitleOutputPolicy NormalizeAiSubtitleOutputPolicy(string? value) => value switch
+    {
+        "preserve" => AiSubtitleOutputPolicy.PreserveOriginal,
+        "overwriteBackup" => AiSubtitleOutputPolicy.OverwriteWithBackup,
+        _ => AiSubtitleOutputPolicy.OverwriteWithBackup,
+    };
+
+    static string GetAiSubtitleOutputPolicyId(AiSubtitleOutputPolicy policy) => policy switch
+    {
+        AiSubtitleOutputPolicy.PreserveOriginal => "preserve",
+        _ => "overwriteBackup",
+    };
+
+    static string FormatAiSubtitleOutputPolicy(AiSubtitleOutputPolicy policy) => policy switch
+    {
+        AiSubtitleOutputPolicy.PreserveOriginal => "保留原字幕并输出 .optimized.srt",
+        _ => "覆盖原字幕并保留备份",
     };
 
     sealed record HostCommand(string Action, JsonElement Payload);

@@ -59,7 +59,11 @@ internal sealed class AppSettingsStore
         public string ModelPath { get; set; } = string.Empty;
         public bool AutoLoadModel { get; set; } = true;
         public string UiScale { get; set; } = "medium";
+        public string AiModelProvider { get; set; } = "gemini";
         public string GeminiModel { get; set; } = GeminiModelClient.DefaultModel;
+        public string LocalAiModel { get; set; } = OpenAiCompatibleModelClient.DefaultModel;
+        public string LocalAiBaseUrl { get; set; } = OpenAiCompatibleModelClient.DefaultBaseUrl;
+        public string AiSubtitleOutputPolicy { get; set; } = "overwriteBackup";
         public List<string> RecentModels { get; set; } = [];
         public string? SelectedCaptureEndpoint { get; set; }
         public bool TerminologyEnabled { get; set; }

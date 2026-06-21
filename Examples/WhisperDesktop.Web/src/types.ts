@@ -72,17 +72,26 @@ export interface AppState {
   languages: Option[]
   formats: Option[]
   outputLocations: Option[]
+  aiModelProviders: Option[]
   geminiModels: Option[]
+  aiSubtitleOutputPolicies: Option[]
   selectedEngine: string
   selectedLanguage: string
   selectedFormat: string
   selectedOutputLocation: string
+  selectedAiModelProvider: string
   selectedGeminiModel: string
+  selectedLocalAiModel: string
+  localAiBaseUrl: string
+  selectedAiSubtitleOutputPolicy: string
+  effectiveAiSubtitleOutputPolicy: string
   geminiApiKeyConfigured: boolean
+  isAiModelConfigured: boolean
   geminiStatus: string
   isGeminiBusy: boolean
   geminiSampleResult: string
   translate: boolean
+  buildTime: string
   modelPath: string
   modelStatus: string
   modelProgress: number

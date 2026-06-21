@@ -50,15 +50,27 @@ const mockState: AppState = {
     { id: 'source', name: '原文件旁', description: '字幕写入媒体文件所在目录' },
     { id: 'preserve', name: '保留目录结构', description: '在输出目录中保留导入目录层级' },
   ],
+  aiModelProviders: [
+    { id: 'gemini', name: 'Gemini（在线）', description: '使用 Google Gemini API' },
+    { id: 'localOpenAi', name: '本地 OpenAI 兼容', description: 'Ollama / llama.cpp / LM Studio' },
+  ],
   geminiModels: [
     { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite（低成本，推荐）' },
     { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash（更强，成本更高）' },
     { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite（兼容备选）' },
   ],
+  aiSubtitleOutputPolicies: [
+    { id: 'overwriteBackup', name: '覆盖原字幕（保留备份）', description: '普通模式推荐，直接得到最终 .srt' },
+    { id: 'preserve', name: '保留原字幕，输出优化副本', description: '诊断或审校时使用，生成 .optimized.srt' },
+  ],
   selectedEngine: 'cuda', selectedLanguage: 'zh', selectedFormat: 'srt', selectedOutputLocation: 'selected',
-  selectedGeminiModel: 'gemini-3.1-flash-lite', geminiApiKeyConfigured: false, geminiStatus: '未配置 API Key',
+  selectedAiModelProvider: 'gemini', selectedGeminiModel: 'gemini-3.1-flash-lite',
+  selectedLocalAiModel: 'qwen3:8b', localAiBaseUrl: 'http://localhost:11434/v1/',
+  selectedAiSubtitleOutputPolicy: 'overwriteBackup', effectiveAiSubtitleOutputPolicy: 'overwriteBackup',
+  geminiApiKeyConfigured: false, isAiModelConfigured: false, geminiStatus: '未配置 API Key',
   isGeminiBusy: false, geminiSampleResult: '',
   translate: false, modelPath: '', modelStatus: '尚未加载模型', modelProgress: 0,
+  buildTime: '',
   modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
   uiScale: 'medium',
   terminologyEnabled: false, developerDiagnostics: false, terminologyDirectory: 'C:\\Users\\Public\\AppData\\Local\\WhisperDesktop\\terminology',
@@ -98,26 +110,54 @@ class BrowserMockBridge implements DesktopBridge {
       if (setting?.name === 'geminiModel') {
         mockState.selectedGeminiModel = String(setting.value || 'gemini-3.1-flash-lite')
         this.publish()
+      } else if (setting?.name === 'aiModelProvider') {
+        mockState.selectedAiModelProvider = String(setting.value || 'gemini')
+        mockState.isAiModelConfigured = mockState.selectedAiModelProvider === 'localOpenAi'
+          ? Boolean(mockState.localAiBaseUrl && mockState.selectedLocalAiModel)
+          : mockState.geminiApiKeyConfigured
+        mockState.geminiStatus = mockState.selectedAiModelProvider === 'localOpenAi'
+          ? `本地 AI 已配置：${mockState.selectedLocalAiModel}`
+          : (mockState.geminiApiKeyConfigured ? 'API Key 已配置' : '未配置 API Key')
+        this.publish()
+      } else if (setting?.name === 'localAiBaseUrl') {
+        mockState.localAiBaseUrl = String(setting.value || 'http://localhost:11434/v1/')
+        mockState.isAiModelConfigured = Boolean(mockState.localAiBaseUrl && mockState.selectedLocalAiModel)
+        this.publish()
+      } else if (setting?.name === 'localAiModel') {
+        mockState.selectedLocalAiModel = String(setting.value || 'qwen3:8b')
+        mockState.isAiModelConfigured = Boolean(mockState.localAiBaseUrl && mockState.selectedLocalAiModel)
+        mockState.geminiStatus = `本地 AI 已配置：${mockState.selectedLocalAiModel}`
+        this.publish()
+      } else if (setting?.name === 'aiSubtitleOutputPolicy') {
+        mockState.selectedAiSubtitleOutputPolicy = String(setting.value || 'overwriteBackup')
+        mockState.effectiveAiSubtitleOutputPolicy = mockState.developerDiagnostics ? 'preserve' : mockState.selectedAiSubtitleOutputPolicy
+        this.publish()
+      } else if (setting?.name === 'developerDiagnostics') {
+        mockState.developerDiagnostics = Boolean(setting.value)
+        mockState.effectiveAiSubtitleOutputPolicy = mockState.developerDiagnostics ? 'preserve' : mockState.selectedAiSubtitleOutputPolicy
+        this.publish()
       } else if (setting?.name && setting.name in mockState) {
         ;(mockState as unknown as Record<string, unknown>)[setting.name] = setting.value
         this.publish()
       }
     } else if (action === 'saveGeminiApiKey') {
       mockState.geminiApiKeyConfigured = true
+      mockState.isAiModelConfigured = mockState.selectedAiModelProvider === 'gemini' || Boolean(mockState.localAiBaseUrl && mockState.selectedLocalAiModel)
       mockState.geminiStatus = 'API Key 已保存'
       this.publish()
     } else if (action === 'clearGeminiApiKey') {
       mockState.geminiApiKeyConfigured = false
+      mockState.isAiModelConfigured = mockState.selectedAiModelProvider === 'localOpenAi' && Boolean(mockState.localAiBaseUrl && mockState.selectedLocalAiModel)
       mockState.geminiStatus = '未配置 API Key'
       mockState.geminiSampleResult = ''
       this.publish()
-    } else if (action === 'testGeminiConnection') {
-      mockState.geminiStatus = mockState.geminiApiKeyConfigured ? '连接成功：浏览器预览' : '请先保存 Gemini API Key'
+    } else if (action === 'testGeminiConnection' || action === 'testAiModelConnection') {
+      mockState.geminiStatus = mockState.isAiModelConfigured ? '连接成功：浏览器预览' : '请先配置 AI Provider'
       this.publish()
-    } else if (action === 'optimizeGeminiSample') {
+    } else if (action === 'optimizeGeminiSample' || action === 'optimizeAiSample') {
       const sample = payload as { text?: string }
       mockState.geminiSampleResult = sample?.text ? `${sample.text.replace(/呃|嗯/g, '').trim()}\n\n说明：浏览器预览模拟结果` : ''
-      mockState.geminiStatus = mockState.geminiApiKeyConfigured ? '字幕优化试跑完成' : '请先保存 Gemini API Key'
+      mockState.geminiStatus = mockState.isAiModelConfigured ? '字幕优化试跑完成' : '请先配置 AI Provider'
       this.publish()
     } else if (action === 'addFiles') {
       mockState.jobs = Array.from({ length: 14 }, (_, index) => ({

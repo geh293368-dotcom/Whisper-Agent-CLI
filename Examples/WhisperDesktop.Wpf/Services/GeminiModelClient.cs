@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -6,7 +7,37 @@ using System.Text.Json.Serialization;
 
 namespace WhisperDesktop.Modern.Services;
 
-internal sealed class GeminiModelClient
+internal interface IAiSubtitleModelClient
+{
+    string ProviderDisplayName { get; }
+
+    Task<GeminiTestResult> TestConnectionAsync(string apiKey, string model, CancellationToken cancellationToken);
+
+    Task<SubtitleOptimizationResult> OptimizeSubtitleTextAsync(
+        string apiKey,
+        string model,
+        string sourceText,
+        string languageName,
+        CancellationToken cancellationToken);
+
+    Task<SubtitleChunkOptimizationResult> OptimizeSubtitleChunkAsync(
+        string apiKey,
+        string model,
+        IReadOnlyList<SubtitleTextItem> items,
+        string languageName,
+        string terminologyHint,
+        CancellationToken cancellationToken);
+
+    Task<SubtitleQualityEvaluation> EvaluateSubtitleQualityAsync(
+        string apiKey,
+        string model,
+        string fileName,
+        IReadOnlyList<SubtitleComparisonItem> items,
+        string languageName,
+        CancellationToken cancellationToken);
+}
+
+internal class GeminiModelClient : IAiSubtitleModelClient
 {
     public const string DefaultModel = "gemini-3.1-flash-lite";
 
@@ -15,12 +46,14 @@ internal sealed class GeminiModelClient
         Timeout = TimeSpan.FromSeconds(45),
     };
 
-    static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    protected static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public async Task<GeminiTestResult> TestConnectionAsync(string apiKey, string model, CancellationToken cancellationToken)
+    public virtual string ProviderDisplayName => "Gemini";
+
+    public virtual async Task<GeminiTestResult> TestConnectionAsync(string apiKey, string model, CancellationToken cancellationToken)
     {
         string prompt = "Return a JSON object confirming that the connection works. Keep the message under 20 Chinese characters.";
         var schema = new Dictionary<string, object?>
@@ -35,13 +68,13 @@ internal sealed class GeminiModelClient
         };
 
         GeminiJsonResponse response = await GenerateJsonAsync(apiKey, model, prompt, schema, cancellationToken);
-        GeminiTestResult? result = JsonSerializer.Deserialize<GeminiTestResult>(response.Text, JsonOptions);
+        GeminiTestResult? result = DeserializeJson<GeminiTestResult>(response.Text, $"{ProviderDisplayName} 连接测试结果为空。");
         return result is null
             ? new GeminiTestResult(false, "连接成功，但返回为空")
             : result with { Message = string.IsNullOrWhiteSpace(result.Message) ? "连接成功" : result.Message, Usage = response.Usage };
     }
 
-    public async Task<SubtitleOptimizationResult> OptimizeSubtitleTextAsync(
+    public virtual async Task<SubtitleOptimizationResult> OptimizeSubtitleTextAsync(
         string apiKey,
         string model,
         string sourceText,
@@ -80,14 +113,14 @@ internal sealed class GeminiModelClient
         };
 
         GeminiJsonResponse response = await GenerateJsonAsync(apiKey, model, prompt, schema, cancellationToken);
-        SubtitleOptimizationResult? result = JsonSerializer.Deserialize<SubtitleOptimizationResult>(response.Text, JsonOptions);
+        SubtitleOptimizationResult? result = DeserializeJson<SubtitleOptimizationResult>(response.Text, $"{ProviderDisplayName} 返回结果为空。");
         if (result is null || string.IsNullOrWhiteSpace(result.OptimizedText))
-            throw new InvalidOperationException("Gemini 返回结果为空。");
+            throw CreateContentException($"{ProviderDisplayName} 返回结果为空。");
 
         return result with { Usage = response.Usage };
     }
 
-    public async Task<SubtitleChunkOptimizationResult> OptimizeSubtitleChunkAsync(
+    public virtual async Task<SubtitleChunkOptimizationResult> OptimizeSubtitleChunkAsync(
         string apiKey,
         string model,
         IReadOnlyList<SubtitleTextItem> items,
@@ -137,14 +170,14 @@ internal sealed class GeminiModelClient
         };
 
         GeminiJsonResponse response = await GenerateJsonAsync(apiKey, model, prompt, schema, cancellationToken);
-        SubtitleChunkOptimizationResult? result = JsonSerializer.Deserialize<SubtitleChunkOptimizationResult>(response.Text, JsonOptions);
+        SubtitleChunkOptimizationResult? result = DeserializeJson<SubtitleChunkOptimizationResult>(response.Text, $"{ProviderDisplayName} 返回的字幕优化结果为空。");
         if (result is null || result.Items.Count == 0)
-            throw new InvalidOperationException("Gemini 返回的字幕优化结果为空。");
+            throw CreateContentException($"{ProviderDisplayName} 返回的字幕优化结果为空。");
 
         return result with { Usage = response.Usage };
     }
 
-    public async Task<SubtitleQualityEvaluation> EvaluateSubtitleQualityAsync(
+    public virtual async Task<SubtitleQualityEvaluation> EvaluateSubtitleQualityAsync(
         string apiKey,
         string model,
         string fileName,
@@ -224,14 +257,14 @@ internal sealed class GeminiModelClient
         };
 
         GeminiJsonResponse response = await GenerateJsonAsync(apiKey, model, prompt, schema, cancellationToken);
-        SubtitleQualityEvaluation? result = JsonSerializer.Deserialize<SubtitleQualityEvaluation>(response.Text, JsonOptions);
+        SubtitleQualityEvaluation? result = DeserializeJson<SubtitleQualityEvaluation>(response.Text, $"{ProviderDisplayName} 返回的评分结果为空。");
         if (result is null)
-            throw new InvalidOperationException("Gemini 返回的评分结果为空。");
+            throw CreateContentException($"{ProviderDisplayName} 返回的评分结果为空。");
 
         return result with { Usage = response.Usage };
     }
 
-    async Task<GeminiJsonResponse> GenerateJsonAsync(
+    protected virtual async Task<GeminiJsonResponse> GenerateJsonAsync(
         string apiKey,
         string model,
         string prompt,
@@ -239,7 +272,7 @@ internal sealed class GeminiModelClient
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
-            throw new InvalidOperationException("请先配置 Gemini API Key。");
+            throw new GeminiRequestException(GeminiErrorCategory.UserConfiguration, $"请先配置 {ProviderDisplayName} API Key。", retryable: false);
 
         string safeModel = string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim();
         string url = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(safeModel)}:generateContent";
@@ -255,17 +288,85 @@ internal sealed class GeminiModelClient
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Content = new StringContent(JsonSerializer.Serialize(requestBody, JsonOptions), Encoding.UTF8, "application/json");
 
-        using HttpResponseMessage response = await Http.SendAsync(request, cancellationToken);
+        HttpResponseMessage response;
+        try
+        {
+            response = await Http.SendAsync(request, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new GeminiRequestException(GeminiErrorCategory.Timeout, $"{ProviderDisplayName} 请求超时。", retryable: true, innerException: ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new GeminiRequestException(GeminiErrorCategory.Network, $"{ProviderDisplayName} 网络请求失败：{ex.Message}", retryable: true, innerException: ex);
+        }
+
+        using (response)
+        {
         string responseText = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gemini 请求失败：{(int)response.StatusCode} {ExtractErrorMessage(responseText)}");
+        {
+            GeminiErrorCategory category = ClassifyStatusCode(response.StatusCode);
+            throw new GeminiRequestException(
+                category,
+                $"{ProviderDisplayName} 请求失败：{(int)response.StatusCode} {ExtractErrorMessage(responseText)}",
+                IsRetryable(category),
+                response.StatusCode);
+        }
 
+        try
+        {
         using JsonDocument document = JsonDocument.Parse(responseText);
         if (!TryReadGeneratedText(document.RootElement, out string? generatedText) || string.IsNullOrWhiteSpace(generatedText))
-            throw new InvalidOperationException("Gemini 响应里没有可用文本。");
+            throw CreateContentException($"{ProviderDisplayName} 响应里没有可用文本。");
 
         return new GeminiJsonResponse(generatedText, ReadUsage(document.RootElement));
+        }
+        catch (JsonException ex)
+        {
+            throw CreateContentException($"{ProviderDisplayName} 响应不是有效 JSON。", ex);
+        }
+        }
     }
+
+    static T? DeserializeJson<T>(string json, string emptyMessage)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(NormalizeJsonText(json), JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw CreateContentException(emptyMessage, ex);
+        }
+    }
+
+    internal static GeminiRequestException CreateContentException(string message, Exception? innerException = null) =>
+        new(GeminiErrorCategory.Content, message, retryable: true, innerException: innerException);
+
+    internal static GeminiErrorCategory ClassifyStatusCode(HttpStatusCode statusCode) => (int)statusCode switch
+    {
+        400 or 401 or 403 or 404 => GeminiErrorCategory.UserConfiguration,
+        429 => GeminiErrorCategory.RateLimited,
+        500 or 502 or 503 or 504 => GeminiErrorCategory.TemporaryService,
+        >= 500 => GeminiErrorCategory.TemporaryService,
+        _ => GeminiErrorCategory.Unknown,
+    };
+
+    internal static bool IsRetryable(GeminiErrorCategory category) => category switch
+    {
+        GeminiErrorCategory.RateLimited or
+        GeminiErrorCategory.TemporaryService or
+        GeminiErrorCategory.Network or
+        GeminiErrorCategory.Timeout or
+        GeminiErrorCategory.Content => true,
+        _ => false,
+    };
 
     static bool TryReadGeneratedText(JsonElement root, out string? text)
     {
@@ -316,6 +417,23 @@ internal sealed class GeminiModelClient
         }
 
         return string.IsNullOrWhiteSpace(responseText) ? "未知错误" : responseText;
+    }
+
+    static string NormalizeJsonText(string json)
+    {
+        string trimmed = json.Trim();
+        if (!trimmed.StartsWith("```", StringComparison.Ordinal))
+            return trimmed;
+
+        int firstLineBreak = trimmed.IndexOf('\n');
+        if (firstLineBreak < 0)
+            return trimmed;
+
+        int fenceEnd = trimmed.LastIndexOf("```", StringComparison.Ordinal);
+        if (fenceEnd <= firstLineBreak)
+            return trimmed;
+
+        return trimmed[(firstLineBreak + 1)..fenceEnd].Trim();
     }
 
     static Dictionary<string, object?> ConvertJsonSchemaToGemini(Dictionary<string, object?> schema)
@@ -371,7 +489,232 @@ internal sealed class GeminiModelClient
         Dictionary<string, object?> ResponseSchema);
 }
 
+internal sealed class OpenAiCompatibleModelClient : GeminiModelClient
+{
+    public const string DefaultBaseUrl = "http://localhost:11434/v1/";
+    public const string DefaultApiKey = "ollama";
+    public new const string DefaultModel = "qwen3:8b";
+
+    static readonly HttpClient LocalHttp = new()
+    {
+        Timeout = TimeSpan.FromMinutes(10),
+    };
+
+    public string BaseUrl { get; set; } = DefaultBaseUrl;
+
+    public override string ProviderDisplayName => "本地 AI";
+
+    protected override async Task<GeminiJsonResponse> GenerateJsonAsync(
+        string apiKey,
+        string model,
+        string prompt,
+        Dictionary<string, object?> schema,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(BaseUrl))
+            throw new GeminiRequestException(GeminiErrorCategory.UserConfiguration, "本地 AI Base URL 不能为空。", retryable: false);
+
+        string safeModel = string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim();
+        string schemaJson = JsonSerializer.Serialize(schema, JsonOptions);
+        var requestBody = new OpenAiChatCompletionRequest(
+            Model: safeModel,
+            Messages:
+            [
+                new OpenAiChatMessage("system", "你必须输出符合 JSON Schema 的紧凑 JSON。不要输出 Markdown，不要输出解释。"),
+                new OpenAiChatMessage("user", $"{prompt}\n\nJSON Schema：{schemaJson}")
+            ],
+            Temperature: 0.1,
+            Stream: false,
+            ResponseFormat: new OpenAiResponseFormat("json_object"));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildChatCompletionsUri(BaseUrl));
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Content = new StringContent(JsonSerializer.Serialize(requestBody, JsonOptions), Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await LocalHttp.SendAsync(request, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new GeminiRequestException(GeminiErrorCategory.Timeout, "本地 AI 请求超时。", retryable: true, innerException: ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new GeminiRequestException(
+                GeminiErrorCategory.Network,
+                $"本地 AI 网络请求失败：{ex.Message}。请确认 Ollama 已运行，Base URL 通常是 {DefaultBaseUrl}",
+                retryable: true,
+                innerException: ex);
+        }
+
+        using (response)
+        {
+            string responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                GeminiErrorCategory category = ClassifyStatusCode(response.StatusCode);
+                throw new GeminiRequestException(
+                    category,
+                    $"本地 AI 请求失败：{(int)response.StatusCode} {ExtractOpenAiErrorMessage(responseText)}",
+                    IsRetryable(category),
+                    response.StatusCode);
+            }
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(responseText);
+                if (!TryReadOpenAiGeneratedText(document.RootElement, out string? generatedText) || string.IsNullOrWhiteSpace(generatedText))
+                    throw CreateContentException("本地 AI 响应里没有可用文本。");
+
+                return new GeminiJsonResponse(generatedText, ReadOpenAiUsage(document.RootElement));
+            }
+            catch (JsonException ex)
+            {
+                throw CreateContentException("本地 AI 响应不是有效 JSON。", ex);
+            }
+        }
+    }
+
+    static Uri BuildChatCompletionsUri(string baseUrl)
+    {
+        string value = baseUrl.Trim();
+        if (!value.EndsWith("/", StringComparison.Ordinal))
+            value += "/";
+
+        var uri = new Uri(value, UriKind.Absolute);
+        string path = uri.AbsolutePath.TrimEnd('/');
+        if (path.EndsWith("/v1/chat/completions", StringComparison.OrdinalIgnoreCase))
+            return uri;
+
+        if (path.Equals("/api", StringComparison.OrdinalIgnoreCase) || path.EndsWith("/api", StringComparison.OrdinalIgnoreCase))
+            return new Uri(new Uri(uri.GetLeftPart(UriPartial.Authority) + "/"), "v1/chat/completions");
+
+        if (path.Equals("/v1", StringComparison.OrdinalIgnoreCase) || path.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+            return new Uri(uri, "chat/completions");
+
+        return new Uri(uri, "v1/chat/completions");
+    }
+
+    static bool TryReadOpenAiGeneratedText(JsonElement root, out string? text)
+    {
+        text = null;
+        if (!root.TryGetProperty("choices", out JsonElement choices) || choices.ValueKind != JsonValueKind.Array)
+            return false;
+
+        JsonElement firstChoice = choices.EnumerateArray().FirstOrDefault();
+        if (firstChoice.ValueKind == JsonValueKind.Undefined ||
+            !firstChoice.TryGetProperty("message", out JsonElement message) ||
+            !message.TryGetProperty("content", out JsonElement content))
+        {
+            return false;
+        }
+
+        if (content.ValueKind == JsonValueKind.String)
+        {
+            text = content.GetString();
+            return true;
+        }
+
+        if (content.ValueKind != JsonValueKind.Array)
+            return false;
+
+        var builder = new StringBuilder();
+        foreach (JsonElement part in content.EnumerateArray())
+        {
+            if (part.TryGetProperty("text", out JsonElement textPart))
+                builder.Append(textPart.GetString());
+        }
+
+        text = builder.ToString();
+        return text.Length > 0;
+    }
+
+    static GeminiUsage ReadOpenAiUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out JsonElement usage))
+            return GeminiUsage.Empty;
+
+        int promptTokens = ReadInt(usage, "prompt_tokens");
+        int outputTokens = ReadInt(usage, "completion_tokens");
+        int totalTokens = ReadInt(usage, "total_tokens");
+        return new GeminiUsage(promptTokens, outputTokens, 0, totalTokens);
+    }
+
+    static int ReadInt(JsonElement element, string name) =>
+        element.TryGetProperty(name, out JsonElement value) && value.TryGetInt32(out int result) ? result : 0;
+
+    static string ExtractOpenAiErrorMessage(string responseText)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(responseText);
+            if (document.RootElement.TryGetProperty("error", out JsonElement error))
+            {
+                if (error.ValueKind == JsonValueKind.String)
+                    return error.GetString() ?? "未知错误";
+                if (error.TryGetProperty("message", out JsonElement message))
+                    return message.GetString() ?? "未知错误";
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return string.IsNullOrWhiteSpace(responseText) ? "未知错误" : responseText;
+    }
+
+    sealed record OpenAiChatCompletionRequest(
+        string Model,
+        OpenAiChatMessage[] Messages,
+        double Temperature,
+        bool Stream,
+        [property: JsonPropertyName("response_format")] OpenAiResponseFormat ResponseFormat);
+
+    sealed record OpenAiChatMessage(string Role, string Content);
+
+    sealed record OpenAiResponseFormat(string Type);
+}
+
 internal sealed record GeminiJsonResponse(string Text, GeminiUsage Usage);
+
+internal enum GeminiErrorCategory
+{
+    UserConfiguration,
+    RateLimited,
+    TemporaryService,
+    Network,
+    Timeout,
+    Content,
+    Unknown,
+}
+
+internal sealed class GeminiRequestException : Exception
+{
+    public GeminiRequestException(
+        GeminiErrorCategory category,
+        string message,
+        bool retryable,
+        HttpStatusCode? statusCode = null,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Category = category;
+        Retryable = retryable;
+        StatusCode = statusCode;
+    }
+
+    public GeminiErrorCategory Category { get; }
+    public bool Retryable { get; }
+    public HttpStatusCode? StatusCode { get; }
+}
 
 internal sealed record GeminiUsage(int PromptTokens, int OutputTokens, int ThoughtsTokens, int TotalTokens)
 {

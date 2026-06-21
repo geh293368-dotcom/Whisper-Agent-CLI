@@ -17,6 +17,7 @@ Examples/TranscribeCS/obj/
 !Examples/WhisperDesktop.Web/tsconfig.json
 !Examples/WhisperDesktop.Web/tsconfig.app.json
 !Examples/WhisperDesktop.Web/tsconfig.node.json
+!Tools/ModernUiTests/Fixtures/**/*.json
 *.user
 Examples/MicrophoneCS/obj/
 Examples/MicrophoneCS/bin/
@@ -44,3 +45,12 @@ Native/WhisperCppBackend/build-cuda/
 .tmp/
 chrome_start.log
 Releases/
+SampleClips/ProblemCases/
+SampleClips/ProblemCases/*.mp4
+SampleClips/ProblemCases/*.mkv
+SampleClips/ProblemCases/*.mov
+SampleClips/ProblemCases/*.avi
+SampleClips/ProblemCases/*.mp3
+SampleClips/ProblemCases/*.wav
+SampleClips/ProblemCases/*.m4a
+SampleClips/ProblemCases/*.flac

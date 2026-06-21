@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\..\Examples\WhisperDesktop.Wpf\Services\AiSubtitleOptimizationService.cs" Link="AiSubtitleOptimizationService.cs" />
+    <Compile Include="..\..\Examples\WhisperDesktop.Wpf\Services\GeminiModelClient.cs" Link="GeminiModelClient.cs" />
     <Compile Include="..\..\Examples\WhisperDesktop.Wpf\Services\SubtitlePipeline.cs" Link="SubtitlePipeline.cs" />
   </ItemGroup>
 </Project>

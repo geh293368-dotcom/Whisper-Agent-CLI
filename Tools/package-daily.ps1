@@ -27,7 +27,7 @@ if (-not $SkipBuild) {
     if (Test-Path $isolatedBuildOutput) {
         Remove-Item -LiteralPath $isolatedBuildOutput -Recurse -Force
     }
-    & dotnet build $project -c Release -p:Platform=x64 -o $isolatedBuildOutput
+    & dotnet build $project -c Release -p:Platform=x64 -p:BuildWebFrontendOnBuild=true -p:BuildWhisperCppBackendOnBuild=true -p:WhisperCppBackendFlavor=all -p:WhisperCppBackendFreshConfigure=true -o $isolatedBuildOutput
     if ($LASTEXITCODE -ne 0) {
         throw "Release build failed with exit code $LASTEXITCODE."
     }
