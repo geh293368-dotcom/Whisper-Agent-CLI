@@ -21,6 +21,18 @@ const getFilename = (path: string) => {
   return parts[parts.length - 1]
 }
 
+const formatBytes = (bytes?: number) => {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '未知'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
+}
+
 type AppLogoSize = 'small' | 'large'
 type LineIconName = 'window' | 'clock' | 'chip' | 'globe' | 'box' | 'folder' | 'file' | 'book' | 'spark' | 'shield' | 'link' | 'database' | 'wave' | 'queue' | 'mic' | 'settings' | 'activity' | 'monitor' | 'type' | 'brain' | 'key' | 'check' | 'alert'
 
@@ -126,7 +138,7 @@ const emptyState: AppState = {
   selectedLocalAiModel: 'qwen3:8b', localAiBaseUrl: 'http://localhost:11434/v1/', selectedAiSubtitleOutputPolicy: 'overwriteBackup',
   effectiveAiSubtitleOutputPolicy: 'overwriteBackup',
   geminiApiKeyConfigured: false, isAiModelConfigured: false, geminiStatus: '未配置 API Key', isGeminiBusy: false, geminiSampleResult: '',
-  translate: false, modelPath: '', modelStatus: '正在连接桌面宿主',
+  translate: false, modelPath: '', modelFileSizeBytes: undefined, modelStatus: '正在连接桌面宿主',
   buildTime: '',
   modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
   uiScale: 'medium',
@@ -592,100 +604,123 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
   const [localModelInput, setLocalModelInput] = useState(state.selectedLocalAiModel || 'qwen3:8b')
   const isLocalAi = state.selectedAiModelProvider === 'localOpenAi'
   const canUseAi = state.isAiModelConfigured && !state.isGeminiBusy
+  const controlsLocked = state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing
 
   useEffect(() => setLocalBaseUrlInput(state.localAiBaseUrl || 'http://localhost:11434/v1/'), [state.localAiBaseUrl])
   useEffect(() => setLocalModelInput(state.selectedLocalAiModel || 'qwen3:8b'), [state.selectedLocalAiModel])
 
   const selectedProviderName = state.aiModelProviders.find(provider => provider.id === state.selectedAiModelProvider)?.name || state.selectedAiModelProvider || '未选择'
   const selectedLanguageName = state.languages.find(language => language.id === state.selectedLanguage)?.name || state.selectedLanguage || '未选择'
+  const selectedEngineName = state.engines.find(engine => engine.id === state.selectedEngine)?.name || state.selectedEngine || '未选择'
   const modelFileName = state.modelPath ? getFilename(state.modelPath) : '尚未选择模型'
   const aiModelLabel = isLocalAi
     ? `${state.selectedLocalAiModel || '未选择'} · ${state.localAiBaseUrl || '未配置 Base URL'}`
     : state.selectedGeminiModel || '未选择'
+  const aiStatusTone = state.isGeminiBusy ? 'busy' : state.isAiModelConfigured ? 'ready' : 'warning'
+  const modelReady = state.modelProgress >= 1 && !state.isLoadingModel
+  const modelSize = formatBytes(state.modelFileSizeBytes)
 
-  return <div className="page narrow-page settings-page"><header className="page-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>先确认本地转写模型，再配置语言、AI 优化、术语词库和诊断输出。</p></div></header>
+  return <div className="page settings-page"><header className="page-header settings-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>配置推理引擎、AI 提供商、语言及字幕输出等选项。</p></div><span className="auto-save-pill">设置会自动保存</span></header>
     <section className="panel settings-overview">
-      <div className="settings-overview-item">
-        <LineIcon name="chip" />
-        <span><small>本地推理</small><strong title={state.modelStatus}>{state.modelStatus || modelFileName}</strong></span>
-      </div>
-      <div className="settings-overview-item">
-        <LineIcon name={state.isAiModelConfigured ? 'check' : 'key'} />
-        <span><small>{selectedProviderName}</small><strong title={aiModelLabel}>{state.isAiModelConfigured ? 'AI 优化已就绪' : 'AI 优化未配置'}</strong></span>
-      </div>
-      <div className="settings-overview-item">
-        <LineIcon name="globe" />
-        <span><small>识别语言</small><strong>{selectedLanguageName}{state.translate ? ' · 翻译为英文' : ''}</strong></span>
-      </div>
+      <div className="settings-overview-item"><LineIcon name="chip" /><span><small>推理引擎</small><strong title={selectedEngineName}>{selectedEngineName}</strong></span></div>
+      <div className="settings-overview-item"><LineIcon name={state.isAiModelConfigured ? 'check' : 'key'} /><span><small>{selectedProviderName}</small><strong title={aiModelLabel}>{state.isAiModelConfigured ? 'AI 优化已就绪' : 'AI 优化未配置'}</strong></span></div>
+      <div className="settings-overview-item"><LineIcon name="box" /><span><small>模型状态</small><strong title={state.modelStatus}>{state.modelStatus || modelFileName}</strong></span></div>
+      <div className="settings-overview-item"><LineIcon name="globe" /><span><small>识别语言</small><strong>{selectedLanguageName}{state.translate ? ' · 翻译为英文' : ''}</strong></span></div>
     </section>
 
     <div className="settings-grid">
-      <section className="panel full settings-section settings-primary-section"><PanelHeading title="推理模型" caption="本地转写和实时字幕共用这套引擎与 GGML 模型" />
-        <Field label="推理引擎"><Select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} options={state.engines} value={state.selectedEngine} onChange={value => updateSetting('engine', value)} /></Field>
-        <Field label="GGML 模型文件"><div className="input-action">
-          <select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} style={{ flex: 1, minWidth: 0 }} value={state.modelPath} onChange={e => updateSetting('modelPath', e.target.value)}>
-            {state.modelPath && !state.recentModels.includes(state.modelPath) && (
-              <option value={state.modelPath}>{getFilename(state.modelPath)}</option>
-            )}
-            {state.recentModels.map(model => (
-              <option key={model} value={model}>{getFilename(model)} (路径: {model})</option>
-            ))}
-            {state.recentModels.length === 0 && !state.modelPath && (
-              <option value="">尚未选择模型，请点击右侧选择模型...</option>
-            )}
-          </select>
-          <button className="button" disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} onClick={() => command('chooseModel')}>选择模型</button>
-        </div></Field>
-        <div className="load-row"><div><strong>{state.modelStatus}</strong>{state.isLoadingModel && <small>已用时 {Math.floor(state.modelLoadElapsedSeconds)} 秒</small>}<div className={`progress-track large ${state.isLoadingModel && state.modelProgressIndeterminate ? 'indeterminate' : ''}`}><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className={`button ${state.isLoadingModel ? 'danger' : 'primary'}`} disabled={!state.isLoadingModel && (!state.modelPath || state.isRunning || state.isLiveRunning || state.isLivePreparing)} onClick={() => command(state.isLoadingModel ? 'cancelModelLoad' : 'loadModel')}>{state.isLoadingModel ? '取消加载' : '加载模型'}</button></div>
-        <label className="toggle-row"><input type="checkbox" checked={state.autoLoadModel} disabled={state.isLoadingModel || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('autoLoadModel', e.target.checked)} /><span><strong>启动时自动加载上次模型</strong><small>模型路径有效时在界面就绪后后台加载，不阻塞窗口响应</small></span></label>
-      </section>
-
-      <section className="panel settings-section"><PanelHeading title="识别与界面" caption="影响字幕语言任务和界面可读性" />
-        <Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
+      <section className="panel settings-card">
+        <PanelHeading title="界面显示" caption="当前保留真实可用设置，主题和界面语言后续单独接入" />
         <Field label="界面字号"><Select options={uiScaleOptions} value={state.uiScale || 'medium'} onChange={value => updateSetting('uiScale', value)} /></Field>
-        <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>
+        <div className="settings-readonly-row"><LineIcon name="monitor" /><span><small>主题模式</small><strong>跟随系统（待接入）</strong></span></div>
       </section>
 
-      <section className="panel ai-panel settings-section"><PanelHeading title="AI 字幕优化" caption="字幕主流程仍在本机，AI 优化按 Provider 配置执行" />
-        <Field label="AI Provider"><Select disabled={state.isGeminiBusy || state.isAiRunning} options={state.aiModelProviders} value={state.selectedAiModelProvider || 'gemini'} onChange={value => updateSetting('aiModelProvider', value)} /></Field>
-        {isLocalAi ? <>
-          <Field label="Base URL"><input value={localBaseUrlInput} placeholder="http://localhost:11434/v1/" onChange={e => setLocalBaseUrlInput(e.target.value)} onBlur={() => updateSetting('localAiBaseUrl', localBaseUrlInput)} /></Field>
-          <Field label="模型名"><input value={localModelInput} placeholder="qwen3:8b" onChange={e => setLocalModelInput(e.target.value)} onBlur={() => updateSetting('localAiModel', localModelInput)} /></Field>
-          <p className="field-note">Ollama 默认 OpenAI-compatible 地址是 http://localhost:11434/v1/，模型名填写本机已 pull 的 tag。</p>
-        </> : <>
-          <Field label="AI 模型"><Select disabled={state.isGeminiBusy} options={state.geminiModels} value={state.selectedGeminiModel || 'gemini-3.1-flash-lite'} onChange={value => updateSetting('geminiModel', value)} /></Field>
-          <Field label={state.geminiApiKeyConfigured ? '替换 API Key' : 'API Key'}><div className="input-action">
-            <input type="password" value={apiKeyInput} placeholder={state.geminiApiKeyConfigured ? '已配置，可输入新密钥替换' : '粘贴 Google AI Studio API Key'} onChange={e => setApiKeyInput(e.target.value)} />
-            <button className="button" disabled={state.isGeminiBusy || !apiKeyInput.trim()} onClick={() => { command('saveGeminiApiKey', { apiKey: apiKeyInput }); setApiKeyInput('') }}>保存</button>
-          </div></Field>
-        </>}
-        <Field label="AI 输出"><Select disabled={state.isAiRunning || state.isRunning} options={state.aiSubtitleOutputPolicies} value={state.selectedAiSubtitleOutputPolicy || 'overwriteBackup'} onChange={value => updateSetting('aiSubtitleOutputPolicy', value)} /></Field>
+      <section className="panel settings-card">
+        <PanelHeading title="识别语言" caption="Whisper 语言任务设置，双语字幕会作为独立功能设计" />
+        <Field label="源语言"><Select disabled={controlsLocked} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
+        <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || controlsLocked} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文，不等同于双语字幕</small></span></label>
+      </section>
+
+      <section className="panel settings-card">
+        <PanelHeading title="推理引擎设置" caption="只展示当前后端真实支持的选项" />
+        <Field label="推理后端"><Select disabled={controlsLocked} options={state.engines} value={state.selectedEngine} onChange={value => updateSetting('engine', value)} /></Field>
+        <div className="engine-status-card">
+          <LineIcon name="activity" />
+          <span><small>当前状态</small><strong title={state.modelStatus}>{state.modelStatus}</strong><em>{state.isLoadingModel ? `加载中 · ${Math.floor(state.modelLoadElapsedSeconds)} 秒` : modelReady ? '模型已加载' : '等待加载模型'}</em></span>
+        </div>
+      </section>
+
+      <section className="panel settings-card ai-provider-card">
+        <PanelHeading title="本地 / 在线 AI 提供商" caption="字幕主流程仍在本机，AI 优化按 Provider 配置执行" />
+        <div className="ai-provider-layout">
+          <div className="ai-provider-fields">
+            <Field label="AI Provider"><Select disabled={state.isGeminiBusy || state.isAiRunning} options={state.aiModelProviders} value={state.selectedAiModelProvider || 'gemini'} onChange={value => updateSetting('aiModelProvider', value)} /></Field>
+            {isLocalAi ? <>
+              <Field label="Base URL"><input value={localBaseUrlInput} placeholder="http://localhost:11434/v1/" onChange={e => setLocalBaseUrlInput(e.target.value)} onBlur={() => updateSetting('localAiBaseUrl', localBaseUrlInput)} /></Field>
+              <Field label="模型名称"><input value={localModelInput} placeholder="qwen3:8b" onChange={e => setLocalModelInput(e.target.value)} onBlur={() => updateSetting('localAiModel', localModelInput)} /></Field>
+              <p className="field-note">Ollama 默认 OpenAI-compatible 地址是 http://localhost:11434/v1/。</p>
+            </> : <>
+              <Field label="AI 模型"><Select disabled={state.isGeminiBusy} options={state.geminiModels} value={state.selectedGeminiModel || 'gemini-3.1-flash-lite'} onChange={value => updateSetting('geminiModel', value)} /></Field>
+              <Field label={state.geminiApiKeyConfigured ? '替换 API Key' : 'API Key'}><div className="input-action">
+                <input type="password" value={apiKeyInput} placeholder={state.geminiApiKeyConfigured ? '已配置，可输入新密钥替换' : '粘贴 Google AI Studio API Key'} onChange={e => setApiKeyInput(e.target.value)} />
+                <button className="button" disabled={state.isGeminiBusy || !apiKeyInput.trim()} onClick={() => { command('saveGeminiApiKey', { apiKey: apiKeyInput }); setApiKeyInput('') }}>保存</button>
+              </div></Field>
+            </>}
+          </div>
+          <div className={`ai-test-card ${aiStatusTone}`}>
+            <LineIcon name={state.isAiModelConfigured ? 'check' : 'alert'} />
+            <strong>{state.isGeminiBusy ? '正在测试或处理' : state.isAiModelConfigured ? '连接可用' : '尚未就绪'}</strong>
+            <span title={state.geminiStatus}>{state.isGeminiBusy ? '处理中...' : state.geminiStatus}</span>
+            <small title={aiModelLabel}>模型：{isLocalAi ? state.selectedLocalAiModel : state.selectedGeminiModel}</small>
+            <button className="button primary" disabled={!canUseAi} onClick={() => command('testAiModelConnection')}>测试连接</button>
+            {!isLocalAi && <button className="button" disabled={state.isGeminiBusy || !state.geminiApiKeyConfigured} onClick={() => command('clearGeminiApiKey')}>清除密钥</button>}
+          </div>
+        </div>
+      </section>
+
+      <section className="panel settings-card">
+        <PanelHeading title="字幕输出策略" caption="当前只配置已接入的 AI 优化输出方式" />
+        <Field label="AI 输出策略"><Select disabled={state.isAiRunning || state.isRunning} options={state.aiSubtitleOutputPolicies} value={state.selectedAiSubtitleOutputPolicy || 'overwriteBackup'} onChange={value => updateSetting('aiSubtitleOutputPolicy', value)} /></Field>
         <p className="field-note">{state.developerDiagnostics
           ? '开发者诊断已开启，本次会强制保留原字幕并输出 .optimized.srt。'
           : aiOutputPolicyDescriptions[state.effectiveAiSubtitleOutputPolicy] || aiOutputPolicyDescriptions.overwriteBackup}</p>
-        <div className="ai-actions">
-          <button className="button" disabled={!canUseAi} onClick={() => command('testAiModelConnection')}>测试连接</button>
-          {!isLocalAi && <button className="button" disabled={state.isGeminiBusy || !state.geminiApiKeyConfigured} onClick={() => command('clearGeminiApiKey')}>清除密钥</button>}
-        </div>
-        <p className={`ai-status ${state.isAiModelConfigured ? 'ready' : ''}`}>{state.isGeminiBusy ? '处理中...' : state.geminiStatus}</p>
       </section>
 
-      <section className="panel ai-panel settings-section"><PanelHeading title="优化试跑" caption="先验证一条字幕的润色效果" />
-        <textarea className="sample-textarea" value={sampleText} onChange={e => setSampleText(e.target.value)} />
-        <div className="ai-actions">
-          <button className="button primary" disabled={!canUseAi || !sampleText.trim()} onClick={() => command('optimizeAiSample', { text: sampleText })}>优化试跑</button>
+      <section className="panel settings-card ai-preview-card">
+        <div className="panel-toolbar"><PanelHeading title="示例：AI 优化结果" caption="先用一条字幕验证 Provider 和提示词效果" /><button className="button primary" disabled={!canUseAi || !sampleText.trim()} onClick={() => command('optimizeAiSample', { text: sampleText })}>优化试跑</button></div>
+        <div className="ai-compare">
+          <label><span>原始字幕</span><textarea className="sample-textarea" value={sampleText} onChange={e => setSampleText(e.target.value)} /></label>
+          <div className="sample-result optimized"><span>AI 优化后</span><p>{state.geminiSampleResult || '配置 AI Provider 后，可在这里试跑一条字幕。'}</p></div>
         </div>
-        <div className="sample-result">{state.geminiSampleResult || '配置 AI Provider 后，可在这里试跑一条字幕。'}</div>
       </section>
 
-      <section className="panel full settings-section"><div className="panel-toolbar"><PanelHeading title="术语词库" caption={state.terminologyDirectory || '词库目录尚未初始化'} />
+      <section className="panel full settings-card model-card">
+        <div className="panel-toolbar"><PanelHeading title="推理模型（Whisper）" caption="本地转写和实时字幕共用这套 GGML 模型" /><span className={`model-loaded-pill ${modelReady ? 'ready' : ''}`}>{modelReady ? '模型已加载' : '模型未加载'}</span></div>
+        <Field label="模型文件路径"><div className="input-action">
+          <select disabled={controlsLocked} style={{ flex: 1, minWidth: 0 }} value={state.modelPath} onChange={e => updateSetting('modelPath', e.target.value)}>
+            {state.modelPath && !state.recentModels.includes(state.modelPath) && <option value={state.modelPath}>{getFilename(state.modelPath)}</option>}
+            {state.recentModels.map(model => <option key={model} value={model}>{getFilename(model)} (路径: {model})</option>)}
+            {state.recentModels.length === 0 && !state.modelPath && <option value="">尚未选择模型，请点击右侧选择模型...</option>}
+          </select>
+          <button className="button" disabled={controlsLocked} onClick={() => command('chooseModel')}>浏览...</button>
+        </div></Field>
+        <div className="model-meta-row">
+          <div><small>模型大小</small><strong>{modelSize}</strong></div>
+          <div><small>文件名</small><strong title={modelFileName}>{modelFileName}</strong></div>
+          <div><small>加载状态</small><strong title={state.modelStatus}>{state.modelStatus}</strong></div>
+        </div>
+        <div className="load-row"><div>{state.isLoadingModel && <small>已用时 {Math.floor(state.modelLoadElapsedSeconds)} 秒</small>}<div className={`progress-track large ${state.isLoadingModel && state.modelProgressIndeterminate ? 'indeterminate' : ''}`}><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className={`button ${state.isLoadingModel ? 'danger' : 'primary'}`} disabled={!state.isLoadingModel && (!state.modelPath || state.isRunning || state.isLiveRunning || state.isLivePreparing)} onClick={() => command(state.isLoadingModel ? 'cancelModelLoad' : 'loadModel')}>{state.isLoadingModel ? '取消加载' : '加载模型'}</button></div>
+        <label className="toggle-row"><input type="checkbox" checked={state.autoLoadModel} disabled={controlsLocked} onChange={e => updateSetting('autoLoadModel', e.target.checked)} /><span><strong>启动时自动加载上次模型</strong><small>模型路径有效时在界面就绪后后台加载，不阻塞窗口响应</small></span></label>
+      </section>
+
+      <section className="panel full settings-card"><div className="panel-toolbar"><PanelHeading title="术语词库" caption={state.terminologyDirectory || '词库目录尚未初始化'} />
         <div className="text-actions"><button onClick={() => command('refreshTerminology')}>刷新</button><button onClick={() => command('openTerminologyFolder')}>打开目录</button></div>
       </div>
-        <label className="toggle-row"><input type="checkbox" checked={state.terminologyEnabled} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('terminologyEnabled', e.target.checked)} /><span><strong>启用术语词库</strong><small>转写前注入高优先级术语，转写后按配置做安全纠错</small></span></label>
+        <label className="toggle-row"><input type="checkbox" checked={state.terminologyEnabled} disabled={controlsLocked} onChange={e => updateSetting('terminologyEnabled', e.target.checked)} /><span><strong>启用术语词库</strong><small>转写前注入高优先级术语，转写后按配置做安全纠错</small></span></label>
         <div className="terminology-list">
           {state.terminologyPacks.length === 0 && <EmptyState text="打开目录后添加 JSON 词库文件" />}
           {state.terminologyPacks.map(pack => <label className="terminology-item" key={pack.id}>
-            <input type="checkbox" checked={pack.selected} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => command('setTerminologyPackSelected', { id: pack.id, selected: e.target.checked })} />
+            <input type="checkbox" checked={pack.selected} disabled={controlsLocked} onChange={e => command('setTerminologyPackSelected', { id: pack.id, selected: e.target.checked })} />
             <span><strong>{pack.name}</strong><small title={pack.filePath || pack.id}>{pack.description || pack.id}</small>
               <span className="terminology-terms">{pack.terms.slice(0, 24).map(term => <b key={`${pack.id}-${term.text}`} title={`${term.category || '术语'}${term.corrections?.length ? ` · 纠错：${term.corrections.join(', ')}` : ''}`}>{term.text}</b>)}</span>
             </span>
@@ -693,15 +728,12 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
           </label>)}
         </div>
       </section>
-      <section className="panel diagnostics-panel settings-section"><PanelHeading title="开发者诊断" caption="预留给字幕质量排查" />
-        <label className="toggle-row"><input type="checkbox" checked={state.developerDiagnostics} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('developerDiagnostics', e.target.checked)} /><span><strong>启用开发者诊断模式</strong><small>当前版本只保存开关并标记诊断意图；接入 AI 后再生成评分、规则命中和质量报告。</small></span></label>
+
+      <section className="panel settings-card diagnostics-panel"><PanelHeading title="开发者诊断" caption="预留给字幕质量排查" />
+        <label className="toggle-row"><input type="checkbox" checked={state.developerDiagnostics} disabled={controlsLocked} onChange={e => updateSetting('developerDiagnostics', e.target.checked)} /><span><strong>启用开发者诊断模式</strong><small>当前版本只保存开关并标记诊断意图；AI 优化会保留 .optimized.srt 便于对比。</small></span></label>
       </section>
-      <section className="panel diagnostics-panel settings-section"><PanelHeading title="诊断输出" caption="后续质量报告预留位" />
-        <div className="diagnostics-preview diagnostics-preview-compact">
-          <div><span>报告</span><strong>批次摘要</strong></div>
-          <div><span>评分</span><strong>单文件质量</strong></div>
-          <div><span>对比</span><strong>优化前后</strong></div>
-        </div>
+      <section className="panel settings-card diagnostics-panel"><PanelHeading title="诊断输出" caption="后续质量报告预留位" />
+        <div className="diagnostics-preview diagnostics-preview-compact"><div><span>报告</span><strong>批次摘要</strong></div><div><span>评分</span><strong>单文件质量</strong></div><div><span>对比</span><strong>优化前后</strong></div></div>
       </section>
     </div>
   </div>

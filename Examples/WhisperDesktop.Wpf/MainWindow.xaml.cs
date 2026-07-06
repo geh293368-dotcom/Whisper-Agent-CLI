@@ -1721,6 +1721,7 @@ public partial class MainWindow : Window
             translate,
             buildTime = BuildInfo.BuildTime,
             modelPath,
+            modelFileSizeBytes = GetModelFileSizeBytes(),
             modelStatus,
             modelProgress,
             modelProgressIndeterminate,
@@ -1802,6 +1803,22 @@ public partial class MainWindow : Window
             recentModels = recentModels.ToArray(),
         };
         SendMessage(new { type = "state", payload = state });
+    }
+
+    long? GetModelFileSizeBytes()
+    {
+        if (string.IsNullOrWhiteSpace(modelPath))
+            return null;
+
+        try
+        {
+            FileInfo file = new(modelPath);
+            return file.Exists ? file.Length : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     void SendError(string message) => SendMessage(new { type = "error", payload = new { message } });

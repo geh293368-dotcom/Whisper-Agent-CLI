@@ -93,6 +93,7 @@ export interface AppState {
   translate: boolean
   buildTime: string
   modelPath: string
+  modelFileSizeBytes?: number
   modelStatus: string
   modelProgress: number
   modelProgressIndeterminate: boolean
