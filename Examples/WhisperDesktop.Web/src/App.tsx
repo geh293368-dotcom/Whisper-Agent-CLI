@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { desktopBridge } from './bridge'
 import type { AppState, Job, LiveSegment, Page, Segment } from './types'
 import { ResizableTable, TableColumn } from './ResizableTable'
@@ -19,6 +19,105 @@ const getFilename = (path: string) => {
   if (!path) return ''
   const parts = path.split(/[\\/]/)
   return parts[parts.length - 1]
+}
+
+type AppLogoSize = 'small' | 'large'
+type LineIconName = 'window' | 'clock' | 'chip' | 'globe' | 'box' | 'folder' | 'file' | 'book' | 'spark' | 'shield' | 'link' | 'database' | 'wave' | 'queue' | 'mic' | 'settings' | 'activity' | 'monitor' | 'type' | 'brain' | 'key' | 'check' | 'alert'
+
+function AppLogo({ size = 'small', className = '' }: { size?: AppLogoSize; className?: string }) {
+  const classNames = ['app-logo', `app-logo-${size}`, className].filter(Boolean).join(' ')
+  return <span className={classNames} aria-hidden="true">
+    <svg viewBox="0 0 48 48" focusable="false">
+      <rect className="app-logo-bg" x="4" y="4" width="40" height="40" rx="10" />
+      <path className="app-logo-wave" d="M14 25c2.8-8 5.7-12 8.8-12 3.3 0 4.5 7.5 7.4 7.5 1.8 0 2.9-2.4 3.8-5.5" />
+      <path className="app-logo-line" d="M13 31h22" />
+      <path className="app-logo-line" d="M17 36h14" />
+      <circle className="app-logo-dot" cx="31" cy="20.5" r="2.2" />
+    </svg>
+  </span>
+}
+
+function LineIcon({ name, className = '' }: { name: LineIconName; className?: string }) {
+  let content: ReactNode
+  switch (name) {
+    case 'window':
+      content = <><rect x="4" y="5" width="16" height="12" rx="2" /><path d="M8 20h8M10 17v3M14 17v3" /></>
+      break
+    case 'clock':
+      content = <><circle cx="12" cy="12" r="8" /><path d="M12 8v5l3 2" /></>
+      break
+    case 'chip':
+      content = <><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3" /></>
+      break
+    case 'globe':
+      content = <><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16" /></>
+      break
+    case 'box':
+      content = <><path d="M5 8l7-4 7 4v8l-7 4-7-4z" /><path d="M5 8l7 4 7-4M12 12v8" /></>
+      break
+    case 'folder':
+      content = <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h4l2 2h5A2.5 2.5 0 0 1 20 9.5v6A2.5 2.5 0 0 1 17.5 18h-11A2.5 2.5 0 0 1 4 15.5z" />
+      break
+    case 'file':
+      content = <><path d="M7 4h7l4 4v12H7z" /><path d="M14 4v5h4M10 13h5M10 16h4" /></>
+      break
+    case 'book':
+      content = <><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v16H7.5A2.5 2.5 0 0 0 5 21.5z" /><path d="M5 5.5v16M9 7h6" /></>
+      break
+    case 'spark':
+      content = <><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M18 15l.9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9z" /></>
+      break
+    case 'shield':
+      content = <path d="M12 3l7 3v5.4c0 4.4-2.8 7.5-7 9.6-4.2-2.1-7-5.2-7-9.6V6z" />
+      break
+    case 'link':
+      content = <><path d="M9.5 14.5l5-5" /><path d="M10.5 7.5l1.1-1.1a4 4 0 0 1 5.7 5.7l-1.1 1.1" /><path d="M13.5 16.5l-1.1 1.1a4 4 0 0 1-5.7-5.7l1.1-1.1" /></>
+      break
+    case 'database':
+      content = <><ellipse cx="12" cy="6" rx="7" ry="3" /><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6" /><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" /></>
+      break
+    case 'wave':
+      content = <path d="M4 13c2.2 0 2.2-6 4.4-6s2.2 10 4.4 10S15 9 17.2 9 19.4 13 20 13" />
+      break
+    case 'queue':
+      content = <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 9h8M8 13h8M8 17h5" /></>
+      break
+    case 'mic':
+      content = <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" /></>
+      break
+    case 'settings':
+      content = <><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M4.2 7.5l2.6 1.5M17.2 15l2.6 1.5M19.8 7.5L17.2 9M6.8 15l-2.6 1.5" /></>
+      break
+    case 'activity':
+      content = <path d="M4 13h4l2-7 4 12 2-5h4" />
+      break
+    case 'monitor':
+      content = <><rect x="4" y="5" width="16" height="11" rx="2" /><path d="M9 20h6M12 16v4" /></>
+      break
+    case 'type':
+      content = <><path d="M5 6h14M12 6v12M8 18h8" /><path d="M7 6l-1 3M17 6l1 3" /></>
+      break
+    case 'brain':
+      content = <><path d="M9 5a3 3 0 0 0-3 3 3 3 0 0 0 0 6 3 3 0 0 0 3 5" /><path d="M15 5a3 3 0 0 1 3 3 3 3 0 0 1 0 6 3 3 0 0 1-3 5" /><path d="M9 5v14M15 5v14M9 10h6M9 14h6" /></>
+      break
+    case 'key':
+      content = <><circle cx="8" cy="12" r="3" /><path d="M11 12h9M16 12v3M19 12v2" /></>
+      break
+    case 'check':
+      content = <><circle cx="12" cy="12" r="8" /><path d="M8.5 12.5l2.2 2.2 4.8-5" /></>
+      break
+    case 'alert':
+      content = <><path d="M12 4l9 16H3z" /><path d="M12 9v4M12 17h.01" /></>
+      break
+    default:
+      content = <path d="M12 5v14M5 12h14" />
+      break
+  }
+
+  const classNames = ['line-icon', className].filter(Boolean).join(' ')
+  return <span className={classNames} aria-hidden="true">
+    <svg viewBox="0 0 24 24" focusable="false">{content}</svg>
+  </span>
 }
 
 const emptyState: AppState = {
@@ -110,21 +209,44 @@ function App() {
     })
   }
   const closeAbout = () => setPage(previousPage.current === 'about' ? 'batch' : previousPage.current)
+  const activityLabel = state.isAiRunning
+    ? 'AI 优化中'
+    : state.isRunning
+      ? '批量转写中'
+      : state.isLiveRunning
+        ? '实时字幕中'
+        : state.isLoadingModel
+          ? '模型加载中'
+          : state.isScanningMedia
+            ? '读取媒体中'
+            : '空闲就绪'
+  const activityDetail = state.isAiRunning
+    ? state.aiBatchStatus
+    : state.isLiveRunning || state.isLivePreparing
+      ? state.liveStatus
+      : state.globalStatus || state.modelStatus
+  const modelReady = state.modelProgress >= 1 && !state.isLoadingModel
 
   return (
     <div className={`app-shell ui-font-${state.uiScale || 'medium'}`}>
       <aside className="sidebar">
         <button className="brand" type="button" onClick={openAbout} aria-label="打开关于页面" title="关于 Whisper Desktop">
-          <span className="brand-mark">W</span><span><strong>Whisper</strong><small>Desktop Studio</small></span>
+          <AppLogo size="small" className="brand-mark" /><span><strong>Whisper</strong><small>Desktop Studio</small></span>
         </button>
         <nav>
-          <NavButton active={page === 'batch'} label="批量字幕" icon="▤" onClick={() => setPage('batch')} />
-          <NavButton active={page === 'live'} label="实时字幕" icon="◉" onClick={() => setPage('live')} />
-          <NavButton active={page === 'settings'} label="模型与设置" icon="⚙" onClick={() => setPage('settings')} />
+          <NavButton active={page === 'batch'} label="批量字幕" icon="queue" onClick={() => setPage('batch')} />
+          <NavButton active={page === 'live'} label="实时字幕" icon="mic" onClick={() => setPage('live')} />
+          <NavButton active={page === 'settings'} label="模型与设置" icon="settings" onClick={() => setPage('settings')} />
         </nav>
         <div className="sidebar-status">
-          <span className={state.modelProgress >= 1 ? 'status-dot ready' : 'status-dot'} />
-          <div><small>当前模型</small><strong title={state.modelStatus}>{state.modelStatus}</strong></div>
+          <div className="sidebar-status-row">
+            <span className={modelReady ? 'status-dot ready' : 'status-dot'} />
+            <div><small>当前状态</small><strong title={activityDetail}>{activityLabel}</strong></div>
+          </div>
+          <div className="sidebar-status-row compact">
+            <LineIcon name="box" className="sidebar-mini-icon" />
+            <div><small>当前模型</small><strong title={state.modelStatus}>{state.modelStatus}</strong></div>
+          </div>
         </div>
       </aside>
 
@@ -140,8 +262,8 @@ function App() {
   )
 }
 
-function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick(): void }) {
-  return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}><span>{icon}</span>{label}</button>
+function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: LineIconName; onClick(): void }) {
+  return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}><LineIcon name={icon} className="nav-line-icon" />{label}</button>
 }
 
 type Command = (action: string, payload?: unknown) => void
@@ -377,43 +499,89 @@ function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
   const selectedEngine = state.engines.find(engine => engine.id === state.selectedEngine)?.name || state.selectedEngine || '未选择'
   const selectedLanguage = state.languages.find(language => language.id === state.selectedLanguage)?.name || state.selectedLanguage || '未选择'
   const activeTerminologyPacks = state.terminologyPacks.filter(pack => pack.selected).map(pack => pack.name).join('、') || '未启用'
-  const rows = [
-    ['运行方式', '本地 Whisper / whisper.cpp / WebView2 / React'],
-    ['编译时间', state.buildTime || '未知'],
-    ['推理引擎', selectedEngine],
-    ['识别语言', selectedLanguage],
-    ['当前模型', state.modelStatus || '尚未加载'],
-    ['默认输出目录', state.outputFolder || '未设置'],
-    ['日志文件', state.logFilePath || '尚未创建'],
-    ['术语词库目录', state.terminologyDirectory || '未初始化'],
-    ['已选术语词库', activeTerminologyPacks],
+  const selectedProvider = state.aiModelProviders.find(provider => provider.id === state.selectedAiModelProvider)?.name || state.selectedAiModelProvider || '未选择'
+  const isLocalAi = state.selectedAiModelProvider === 'localOpenAi'
+  const aiModel = isLocalAi
+    ? `${state.selectedLocalAiModel || '未选择'} · ${state.localAiBaseUrl || '未配置 Base URL'}`
+    : state.selectedGeminiModel || '未选择'
+  const aiStatus = state.isGeminiBusy ? '检测中' : state.isAiModelConfigured ? '就绪' : '未配置'
+  const systemRows: { icon: LineIconName; label: string; value: string }[] = [
+    { icon: 'window', label: '运行方式', value: '本地 Whisper / whisper.cpp / WebView2 / React' },
+    { icon: 'clock', label: '编译时间', value: state.buildTime || '未知' },
+    { icon: 'chip', label: '推理引擎', value: selectedEngine },
+    { icon: 'globe', label: '识别语言', value: selectedLanguage },
+    { icon: 'box', label: '当前模型', value: state.modelStatus || '尚未加载' },
+    { icon: 'folder', label: '默认输出目录', value: state.outputFolder || '未设置' },
+    { icon: 'file', label: '日志文件', value: state.logFilePath || '尚未创建' },
+    { icon: 'book', label: '术语词库目录', value: state.terminologyDirectory || '未初始化' },
   ]
+  const componentRows = [
+    { icon: 'wave' as LineIconName, title: 'Whisper 推理', detail: selectedEngine, status: state.modelPath ? '已配置' : '待加载', ready: Boolean(state.modelPath) },
+    { icon: 'spark' as LineIconName, title: selectedProvider, detail: aiModel, status: aiStatus, ready: state.isAiModelConfigured },
+    { icon: 'database' as LineIconName, title: '术语词库', detail: activeTerminologyPacks, status: state.terminologyEnabled ? '启用' : '未启用', ready: state.terminologyEnabled },
+  ]
+  const modelBadge = state.modelPath ? getFilename(state.modelPath) : '未加载模型'
 
   return <div className="page narrow-page about-page">
     <header className="page-header about-header">
       <div><p className="eyebrow">ABOUT</p><h1>Whisper Desktop</h1><p>面向批量字幕与实时字幕的本地转写工作台。</p></div>
-      <button className="button" onClick={onBack}>返回</button>
+      <button className="button about-back-button" onClick={onBack}><span aria-hidden="true">←</span>返回</button>
     </header>
 
-    <section className="about-hero panel">
-      <span className="about-mark">W</span>
-      <div>
-        <h2>Whisper Desktop Studio</h2>
-        <p>把模型、任务队列、日志与字幕预览集中在一个桌面界面里，适合剪辑、教程和长素材转写流程。</p>
+    <section className="about-product-card panel">
+      <div className="about-product-main">
+        <AppLogo size="large" className="about-product-logo" />
+        <div className="about-product-copy">
+          <div className="about-title-row">
+            <h2>Whisper Desktop Studio</h2>
+            <span className="about-pill">本地 AI 字幕工作站</span>
+          </div>
+          <p>把模型、任务队列、实时字幕、日志和字幕优化集中到一个桌面界面里，适合剪辑、教程和长素材转写流程。</p>
+        </div>
+      </div>
+      <div className="about-status-card" aria-label="当前运行摘要">
+        <div className={`about-live-status ${state.isRunning || state.isLiveRunning ? 'active' : ''}`}>
+          <i aria-hidden="true" /><strong>{state.isRunning || state.isLiveRunning ? '正在处理' : '本地就绪'}</strong>
+        </div>
+        <div className="about-meta-grid">
+          <div className="about-meta-item"><small>模型</small><strong title={modelBadge}>{modelBadge}</strong></div>
+          <div className="about-meta-item"><small>构建</small><strong title={state.buildTime || '未知'}>{state.buildTime || '未知'}</strong></div>
+        </div>
       </div>
     </section>
 
-    <section className="panel about-section">
-      <PanelHeading title="当前环境" caption="这些信息来自当前宿主状态，便于排查模型、输出和词库配置" />
-      <div className="about-grid">
-        {rows.map(([label, value]) => <div className="about-row" key={label}><span>{label}</span><strong title={value}>{value}</strong></div>)}
-      </div>
-    </section>
+    <div className="about-layout">
+      <section className="panel about-card">
+        <PanelHeading title="系统与运行信息" caption="来自当前桌面宿主状态，便于排查模型、输出和词库配置" />
+        <div className="about-list">
+          {systemRows.map(row => <div className="about-info-row" key={row.label}>
+            <LineIcon name={row.icon} />
+            <span><small>{row.label}</small><strong title={row.value}>{row.value}</strong></span>
+          </div>)}
+        </div>
+      </section>
 
-    <section className="panel about-section">
-      <PanelHeading title="隐私与组件" caption="默认工作流在本机完成，后续接入在线 AI 前会明确提供开关" />
-      <p className="about-note">批量与实时转写默认在本机运行；当前界面的模型加载、字幕生成、日志记录和术语词库读取都由桌面宿主协调。在线 AI 优化功能接入前，不会自动上传字幕内容。</p>
-    </section>
+      <div className="about-side-stack">
+        <section className="panel about-card">
+          <PanelHeading title="本地运行组件" caption="字幕主流程优先使用本机能力，AI 优化按当前 Provider 配置执行" />
+          <div className="about-component-list">
+            {componentRows.map(row => <div className="about-component-row" key={row.title}>
+              <LineIcon name={row.icon} />
+              <span className="about-component-main"><strong>{row.title}</strong><small title={row.detail}>{row.detail}</small></span>
+              <em className={row.ready ? 'ready' : ''}>{row.status}</em>
+            </div>)}
+          </div>
+        </section>
+
+        <section className="panel about-card">
+          <PanelHeading title="隐私与组件" caption="清楚区分本地推理和可选在线能力" />
+          <div className="about-privacy-list">
+            <div><LineIcon name="shield" /><span><strong>本机转写优先</strong><small>批量与实时转写默认在本机运行，模型加载、日志和词库读取由桌面宿主协调。</small></span></div>
+            <div><LineIcon name="link" /><span><strong>AI 优化显式配置</strong><small>字幕优化只在你配置并启动对应 Provider 后执行，本地 Ollama 走 OpenAI-compatible 接口。</small></span></div>
+          </div>
+        </section>
+      </div>
+    </div>
   </div>
 }
 
@@ -428,15 +596,57 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
   useEffect(() => setLocalBaseUrlInput(state.localAiBaseUrl || 'http://localhost:11434/v1/'), [state.localAiBaseUrl])
   useEffect(() => setLocalModelInput(state.selectedLocalAiModel || 'qwen3:8b'), [state.selectedLocalAiModel])
 
-  return <div className="page narrow-page"><header className="page-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>管理推理引擎、模型以及识别语言配置。</p></div></header>
+  const selectedProviderName = state.aiModelProviders.find(provider => provider.id === state.selectedAiModelProvider)?.name || state.selectedAiModelProvider || '未选择'
+  const selectedLanguageName = state.languages.find(language => language.id === state.selectedLanguage)?.name || state.selectedLanguage || '未选择'
+  const modelFileName = state.modelPath ? getFilename(state.modelPath) : '尚未选择模型'
+  const aiModelLabel = isLocalAi
+    ? `${state.selectedLocalAiModel || '未选择'} · ${state.localAiBaseUrl || '未配置 Base URL'}`
+    : state.selectedGeminiModel || '未选择'
+
+  return <div className="page narrow-page settings-page"><header className="page-header"><div><p className="eyebrow">CONFIGURATION</p><h1>模型与设置</h1><p>先确认本地转写模型，再配置语言、AI 优化、术语词库和诊断输出。</p></div></header>
+    <section className="panel settings-overview">
+      <div className="settings-overview-item">
+        <LineIcon name="chip" />
+        <span><small>本地推理</small><strong title={state.modelStatus}>{state.modelStatus || modelFileName}</strong></span>
+      </div>
+      <div className="settings-overview-item">
+        <LineIcon name={state.isAiModelConfigured ? 'check' : 'key'} />
+        <span><small>{selectedProviderName}</small><strong title={aiModelLabel}>{state.isAiModelConfigured ? 'AI 优化已就绪' : 'AI 优化未配置'}</strong></span>
+      </div>
+      <div className="settings-overview-item">
+        <LineIcon name="globe" />
+        <span><small>识别语言</small><strong>{selectedLanguageName}{state.translate ? ' · 翻译为英文' : ''}</strong></span>
+      </div>
+    </section>
+
     <div className="settings-grid">
-      <section className="panel"><PanelHeading title="界面显示" caption="根据屏幕尺寸调整文字可读性" />
-        <Field label="界面字号"><Select options={uiScaleOptions} value={state.uiScale || 'medium'} onChange={value => updateSetting('uiScale', value)} /></Field>
+      <section className="panel full settings-section settings-primary-section"><PanelHeading title="推理模型" caption="本地转写和实时字幕共用这套引擎与 GGML 模型" />
+        <Field label="推理引擎"><Select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} options={state.engines} value={state.selectedEngine} onChange={value => updateSetting('engine', value)} /></Field>
+        <Field label="GGML 模型文件"><div className="input-action">
+          <select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} style={{ flex: 1, minWidth: 0 }} value={state.modelPath} onChange={e => updateSetting('modelPath', e.target.value)}>
+            {state.modelPath && !state.recentModels.includes(state.modelPath) && (
+              <option value={state.modelPath}>{getFilename(state.modelPath)}</option>
+            )}
+            {state.recentModels.map(model => (
+              <option key={model} value={model}>{getFilename(model)} (路径: {model})</option>
+            ))}
+            {state.recentModels.length === 0 && !state.modelPath && (
+              <option value="">尚未选择模型，请点击右侧选择模型...</option>
+            )}
+          </select>
+          <button className="button" disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} onClick={() => command('chooseModel')}>选择模型</button>
+        </div></Field>
+        <div className="load-row"><div><strong>{state.modelStatus}</strong>{state.isLoadingModel && <small>已用时 {Math.floor(state.modelLoadElapsedSeconds)} 秒</small>}<div className={`progress-track large ${state.isLoadingModel && state.modelProgressIndeterminate ? 'indeterminate' : ''}`}><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className={`button ${state.isLoadingModel ? 'danger' : 'primary'}`} disabled={!state.isLoadingModel && (!state.modelPath || state.isRunning || state.isLiveRunning || state.isLivePreparing)} onClick={() => command(state.isLoadingModel ? 'cancelModelLoad' : 'loadModel')}>{state.isLoadingModel ? '取消加载' : '加载模型'}</button></div>
+        <label className="toggle-row"><input type="checkbox" checked={state.autoLoadModel} disabled={state.isLoadingModel || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('autoLoadModel', e.target.checked)} /><span><strong>启动时自动加载上次模型</strong><small>模型路径有效时在界面就绪后后台加载，不阻塞窗口响应</small></span></label>
       </section>
-      <section className="panel"><PanelHeading title="识别与翻译" caption="设置输入音频的实际语言" /><Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
+
+      <section className="panel settings-section"><PanelHeading title="识别与界面" caption="影响字幕语言任务和界面可读性" />
+        <Field label="源语言"><Select disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} options={state.languages} value={state.selectedLanguage} onChange={value => updateSetting('language', value)} /></Field>
+        <Field label="界面字号"><Select options={uiScaleOptions} value={state.uiScale || 'medium'} onChange={value => updateSetting('uiScale', value)} /></Field>
         <label className="toggle-row"><input type="checkbox" checked={state.translate} disabled={state.selectedLanguage === 'en' || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('translate', e.target.checked)} /><span><strong>翻译为英文</strong><small>Whisper 原生翻译任务仅输出英文</small></span></label>
       </section>
-      <section className="panel ai-panel"><PanelHeading title="AI 字幕模型" caption="用于字幕优化和质量评分" />
+
+      <section className="panel ai-panel settings-section"><PanelHeading title="AI 字幕优化" caption="字幕主流程仍在本机，AI 优化按 Provider 配置执行" />
         <Field label="AI Provider"><Select disabled={state.isGeminiBusy || state.isAiRunning} options={state.aiModelProviders} value={state.selectedAiModelProvider || 'gemini'} onChange={value => updateSetting('aiModelProvider', value)} /></Field>
         {isLocalAi ? <>
           <Field label="Base URL"><input value={localBaseUrlInput} placeholder="http://localhost:11434/v1/" onChange={e => setLocalBaseUrlInput(e.target.value)} onBlur={() => updateSetting('localAiBaseUrl', localBaseUrlInput)} /></Field>
@@ -459,33 +669,16 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
         </div>
         <p className={`ai-status ${state.isAiModelConfigured ? 'ready' : ''}`}>{state.isGeminiBusy ? '处理中...' : state.geminiStatus}</p>
       </section>
-      <section className="panel ai-panel"><PanelHeading title="优化试跑" caption="先验证一条字幕的润色效果" />
+
+      <section className="panel ai-panel settings-section"><PanelHeading title="优化试跑" caption="先验证一条字幕的润色效果" />
         <textarea className="sample-textarea" value={sampleText} onChange={e => setSampleText(e.target.value)} />
         <div className="ai-actions">
           <button className="button primary" disabled={!canUseAi || !sampleText.trim()} onClick={() => command('optimizeAiSample', { text: sampleText })}>优化试跑</button>
         </div>
         <div className="sample-result">{state.geminiSampleResult || '配置 AI Provider 后，可在这里试跑一条字幕。'}</div>
       </section>
-      <section className="panel full"><PanelHeading title="推理模型" caption="推荐使用 CUDA 后端获得最高速度" />
-        <Field label="推理引擎"><Select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} options={state.engines} value={state.selectedEngine} onChange={value => updateSetting('engine', value)} /></Field>
-        <Field label="GGML 模型文件"><div className="input-action">
-          <select disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} style={{ flex: 1, minWidth: 0 }} value={state.modelPath} onChange={e => updateSetting('modelPath', e.target.value)}>
-            {state.modelPath && !state.recentModels.includes(state.modelPath) && (
-              <option value={state.modelPath}>{getFilename(state.modelPath)}</option>
-            )}
-            {state.recentModels.map(model => (
-              <option key={model} value={model}>{getFilename(model)} (路径: {model})</option>
-            ))}
-            {state.recentModels.length === 0 && !state.modelPath && (
-              <option value="">尚未选择模型，请点击右侧选择模型...</option>
-            )}
-          </select>
-          <button className="button" disabled={state.isRunning || state.isLoadingModel || state.isLiveRunning || state.isLivePreparing} onClick={() => command('chooseModel')}>选择模型</button>
-        </div></Field>
-        <div className="load-row"><div><strong>{state.modelStatus}</strong>{state.isLoadingModel && <small>已用时 {Math.floor(state.modelLoadElapsedSeconds)} 秒</small>}<div className={`progress-track large ${state.isLoadingModel && state.modelProgressIndeterminate ? 'indeterminate' : ''}`}><i style={{ width: `${Math.round(state.modelProgress * 100)}%` }} /></div></div><button className={`button ${state.isLoadingModel ? 'danger' : 'primary'}`} disabled={!state.isLoadingModel && (!state.modelPath || state.isRunning || state.isLiveRunning || state.isLivePreparing)} onClick={() => command(state.isLoadingModel ? 'cancelModelLoad' : 'loadModel')}>{state.isLoadingModel ? '取消加载' : '加载模型'}</button></div>
-        <label className="toggle-row"><input type="checkbox" checked={state.autoLoadModel} disabled={state.isLoadingModel || state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('autoLoadModel', e.target.checked)} /><span><strong>启动时自动加载上次模型</strong><small>模型路径有效时在界面就绪后后台加载，不阻塞窗口响应</small></span></label>
-      </section>
-      <section className="panel full"><div className="panel-toolbar"><PanelHeading title="术语词库" caption={state.terminologyDirectory || '词库目录尚未初始化'} />
+
+      <section className="panel full settings-section"><div className="panel-toolbar"><PanelHeading title="术语词库" caption={state.terminologyDirectory || '词库目录尚未初始化'} />
         <div className="text-actions"><button onClick={() => command('refreshTerminology')}>刷新</button><button onClick={() => command('openTerminologyFolder')}>打开目录</button></div>
       </div>
         <label className="toggle-row"><input type="checkbox" checked={state.terminologyEnabled} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('terminologyEnabled', e.target.checked)} /><span><strong>启用术语词库</strong><small>转写前注入高优先级术语，转写后按配置做安全纠错</small></span></label>
@@ -500,10 +693,10 @@ function SettingsPage({ state, command, updateSetting }: { state: AppState; comm
           </label>)}
         </div>
       </section>
-      <section className="panel diagnostics-panel"><PanelHeading title="开发者诊断" caption="预留给字幕质量排查" />
+      <section className="panel diagnostics-panel settings-section"><PanelHeading title="开发者诊断" caption="预留给字幕质量排查" />
         <label className="toggle-row"><input type="checkbox" checked={state.developerDiagnostics} disabled={state.isRunning || state.isLiveRunning || state.isLivePreparing} onChange={e => updateSetting('developerDiagnostics', e.target.checked)} /><span><strong>启用开发者诊断模式</strong><small>当前版本只保存开关并标记诊断意图；接入 AI 后再生成评分、规则命中和质量报告。</small></span></label>
       </section>
-      <section className="panel diagnostics-panel"><PanelHeading title="诊断输出" caption="后续质量报告预留位" />
+      <section className="panel diagnostics-panel settings-section"><PanelHeading title="诊断输出" caption="后续质量报告预留位" />
         <div className="diagnostics-preview diagnostics-preview-compact">
           <div><span>报告</span><strong>批次摘要</strong></div>
           <div><span>评分</span><strong>单文件质量</strong></div>
