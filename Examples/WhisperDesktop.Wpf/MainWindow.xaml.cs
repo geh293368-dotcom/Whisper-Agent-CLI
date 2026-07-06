@@ -151,8 +151,8 @@ public partial class MainWindow : Window
     {
         engines =
         [
-            new("cuda", "whisper.cpp 1.8.6（CUDA / NVIDIA，推荐）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCuda.dll")),
-            new("cpu", "whisper.cpp 1.8.6（CPU，兼容）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCpu.dll")),
+            new("cuda", "whisper.cpp 1.9.1（CUDA / NVIDIA，推荐）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCuda.dll")),
+            new("cpu", "whisper.cpp 1.9.1（CPU，兼容）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCpu.dll")),
             new("d3d11", "WhisperDesktop D3D11（兼容版）", () => new TranscriptionService()),
         ];
         languages =

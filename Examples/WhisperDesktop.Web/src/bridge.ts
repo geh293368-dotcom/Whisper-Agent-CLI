@@ -33,8 +33,8 @@ class WebView2Bridge implements DesktopBridge {
 
 const mockState: AppState = {
   engines: [
-    { id: 'cuda', name: 'whisper.cpp 1.8.6（CUDA / NVIDIA，推荐）' },
-    { id: 'cpu', name: 'whisper.cpp 1.8.6（CPU，兼容）' },
+    { id: 'cuda', name: 'whisper.cpp 1.9.1（CUDA / NVIDIA，推荐）' },
+    { id: 'cpu', name: 'whisper.cpp 1.9.1（CPU，兼容）' },
     { id: 'd3d11', name: 'WhisperDesktop D3D11（兼容版）' },
   ],
   languages: [
