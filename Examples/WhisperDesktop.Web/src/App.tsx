@@ -33,6 +33,13 @@ const formatBytes = (bytes?: number) => {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
 }
 
+const formatGpuMemoryBytes = (bytes?: number) => {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '未知'
+  const gib = bytes / 1024 / 1024 / 1024
+  if (gib >= 1) return `${gib.toFixed(1)} GB`
+  return `${(bytes / 1024 / 1024).toFixed(0)} MB`
+}
+
 type AppLogoSize = 'small' | 'large'
 type LineIconName = 'window' | 'clock' | 'chip' | 'globe' | 'box' | 'folder' | 'file' | 'book' | 'spark' | 'shield' | 'link' | 'database' | 'wave' | 'queue' | 'mic' | 'settings' | 'activity' | 'monitor' | 'type' | 'brain' | 'key' | 'check' | 'alert'
 
@@ -139,6 +146,7 @@ const emptyState: AppState = {
   effectiveAiSubtitleOutputPolicy: 'overwriteBackup',
   geminiApiKeyConfigured: false, isAiModelConfigured: false, geminiStatus: '未配置 API Key', isGeminiBusy: false, geminiSampleResult: '',
   translate: false, modelPath: '', modelFileSizeBytes: undefined, modelStatus: '正在连接桌面宿主',
+  gpuName: '', gpuMemoryUsedBytes: undefined, gpuMemoryTotalBytes: undefined,
   buildTime: '',
   modelProgress: 0, modelProgressIndeterminate: false, modelLoadElapsedSeconds: 0, autoLoadModel: true,
   uiScale: 'medium',
@@ -221,6 +229,7 @@ function App() {
     })
   }
   const closeAbout = () => setPage(previousPage.current === 'about' ? 'batch' : previousPage.current)
+  const modelReady = state.modelProgress >= 1 && !state.isLoadingModel
   const activityLabel = state.isAiRunning
     ? 'AI 优化中'
     : state.isRunning
@@ -231,13 +240,34 @@ function App() {
           ? '模型加载中'
           : state.isScanningMedia
             ? '读取媒体中'
-            : '空闲就绪'
+            : modelReady
+              ? '空闲就绪'
+              : '未加载模型'
   const activityDetail = state.isAiRunning
     ? state.aiBatchStatus
     : state.isLiveRunning || state.isLivePreparing
       ? state.liveStatus
-      : state.globalStatus || state.modelStatus
-  const modelReady = state.modelProgress >= 1 && !state.isLoadingModel
+      : modelReady
+        ? state.globalStatus || state.modelStatus
+        : state.modelStatus || state.globalStatus
+  const systemStatusClass = state.isRunning || state.isLiveRunning || state.isAiRunning || state.isLoadingModel || state.isScanningMedia
+    ? 'active'
+    : modelReady
+      ? 'ready'
+      : 'unavailable'
+  const systemStatusLabel = state.isLoadingModel
+    ? '加载中'
+    : modelReady
+      ? '就绪'
+      : '未就绪'
+  const gpuLabel = state.selectedEngine === 'cpu'
+    ? 'CPU 模式'
+    : state.gpuName || '未检测'
+  const gpuMemoryLabel = state.selectedEngine === 'cpu'
+    ? '不使用显存'
+    : state.gpuMemoryTotalBytes
+      ? `${formatGpuMemoryBytes(state.gpuMemoryUsedBytes)} / ${formatGpuMemoryBytes(state.gpuMemoryTotalBytes)}`
+      : '不可用'
 
   return (
     <div className={`app-shell ui-font-${state.uiScale || 'medium'}`}>
@@ -251,13 +281,18 @@ function App() {
           <NavButton active={page === 'settings'} label="模型与设置" icon="settings" onClick={() => setPage('settings')} />
         </nav>
         <div className="sidebar-status">
-          <div className="sidebar-status-row">
-            <span className={modelReady ? 'status-dot ready' : 'status-dot'} />
-            <div><small>当前状态</small><strong title={activityDetail}>{activityLabel}</strong></div>
+          <div className="sidebar-status-line status-line">
+            <span className={`status-dot ${systemStatusClass}`} />
+            <span className="sidebar-status-label">系统状态：</span>
+            <strong className={systemStatusClass} title={`${activityLabel} · ${activityDetail}`}>{systemStatusLabel}</strong>
           </div>
-          <div className="sidebar-status-row compact">
-            <LineIcon name="box" className="sidebar-mini-icon" />
-            <div><small>当前模型</small><strong title={state.modelStatus}>{state.modelStatus}</strong></div>
+          <div className="sidebar-status-line">
+            <span className="sidebar-status-label">GPU：</span>
+            <strong title={gpuLabel}>{gpuLabel}</strong>
+          </div>
+          <div className="sidebar-status-line">
+            <span className="sidebar-status-label">显存：</span>
+            <strong title={gpuMemoryLabel}>{gpuMemoryLabel}</strong>
           </div>
         </div>
       </aside>

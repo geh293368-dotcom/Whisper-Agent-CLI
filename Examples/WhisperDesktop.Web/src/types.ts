@@ -95,6 +95,9 @@ export interface AppState {
   modelPath: string
   modelFileSizeBytes?: number
   modelStatus: string
+  gpuName?: string
+  gpuMemoryUsedBytes?: number
+  gpuMemoryTotalBytes?: number
   modelProgress: number
   modelProgressIndeterminate: boolean
   modelLoadElapsedSeconds: number

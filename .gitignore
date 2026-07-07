@@ -43,6 +43,7 @@ Native/WhisperCppBackend/build-local/
 Native/WhisperCppBackend/build-cpu/
 Native/WhisperCppBackend/build-cuda/
 .tmp/
+.playwright-cli/
 chrome_start.log
 Releases/
 SampleClips/ProblemCases/

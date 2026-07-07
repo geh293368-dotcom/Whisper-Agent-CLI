@@ -86,6 +86,9 @@ public partial class MainWindow : Window
     string outputFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     string modelStatus = "尚未加载模型";
     string globalStatus = "准备就绪";
+    string gpuName = string.Empty;
+    long? gpuMemoryUsedBytes;
+    long? gpuMemoryTotalBytes;
     string logOutput = string.Empty;
     string LogFilePath => AppLogger.CurrentLogPath;
     string liveStatus = "正在读取录音设备";
@@ -229,6 +232,7 @@ public partial class MainWindow : Window
                 AppendLog("WebView2", $"连接 Vite 开发服务器：{devServerUri}");
                 WebView.Source = devServerUri;
                 RefreshCaptureDevices();
+                _ = RefreshGpuSnapshotAsync();
                 return;
             }
 #endif
@@ -243,6 +247,7 @@ public partial class MainWindow : Window
                 CoreWebView2HostResourceAccessKind.DenyCors);
             WebView.Source = new Uri("https://app.whisperdesktop/index.html");
             RefreshCaptureDevices();
+            _ = RefreshGpuSnapshotAsync();
         }
         catch (Exception ex)
         {
@@ -419,6 +424,7 @@ public partial class MainWindow : Window
             modelLoadTimer.Stop();
             isLoadingModel = false;
             modelProgressIndeterminate = false;
+            await RefreshGpuSnapshotAsync(sendPatch: false);
             PublishState();
         }
     }
@@ -1723,6 +1729,9 @@ public partial class MainWindow : Window
             modelPath,
             modelFileSizeBytes = GetModelFileSizeBytes(),
             modelStatus,
+            gpuName,
+            gpuMemoryUsedBytes,
+            gpuMemoryTotalBytes,
             modelProgress,
             modelProgressIndeterminate,
             modelLoadElapsedSeconds,
@@ -1819,6 +1828,69 @@ public partial class MainWindow : Window
         {
             return null;
         }
+    }
+
+    async Task RefreshGpuSnapshotAsync(bool sendPatch = true)
+    {
+        GpuSnapshot snapshot = await Task.Run(QueryNvidiaGpuSnapshot);
+        gpuName = snapshot.Name;
+        gpuMemoryUsedBytes = snapshot.MemoryUsedBytes;
+        gpuMemoryTotalBytes = snapshot.MemoryTotalBytes;
+
+        if (sendPatch && WebView.CoreWebView2 is not null)
+            SendPatch(new { gpuName, gpuMemoryUsedBytes, gpuMemoryTotalBytes });
+    }
+
+    static GpuSnapshot QueryNvidiaGpuSnapshot()
+    {
+        try
+        {
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = "nvidia-smi",
+                Arguments = "--query-gpu=name,memory.used,memory.total --format=csv,noheader,nounits",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+
+            process.Start();
+            if (!process.WaitForExit(1500))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return GpuSnapshot.Unavailable;
+            }
+
+            if (process.ExitCode != 0)
+                return GpuSnapshot.Unavailable;
+
+            string? line = process.StandardOutput.ReadLine();
+            if (string.IsNullOrWhiteSpace(line))
+                return GpuSnapshot.Unavailable;
+
+            string[] parts = line.Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length < 3)
+                return GpuSnapshot.Unavailable;
+
+            long? usedBytes = TryParseMib(parts[1]);
+            long? totalBytes = TryParseMib(parts[2]);
+            return new GpuSnapshot(parts[0], usedBytes, totalBytes);
+        }
+        catch
+        {
+            return GpuSnapshot.Unavailable;
+        }
+    }
+
+    static long? TryParseMib(string value)
+    {
+        return long.TryParse(value, out long mib) && mib >= 0
+            ? mib * 1024L * 1024L
+            : null;
     }
 
     void SendError(string message) => SendMessage(new { type = "error", payload = new { message } });
@@ -2014,4 +2086,8 @@ public partial class MainWindow : Window
     };
 
     sealed record HostCommand(string Action, JsonElement Payload);
+    sealed record GpuSnapshot(string Name, long? MemoryUsedBytes, long? MemoryTotalBytes)
+    {
+        public static GpuSnapshot Unavailable { get; } = new(string.Empty, null, null);
+    }
 }

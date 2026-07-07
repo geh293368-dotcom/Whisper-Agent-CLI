@@ -16,9 +16,14 @@ button, .nav-button, .brand, .source-item, .terminology-item, .tabs button, .tex
 .sidebar nav { display: grid; gap: 5px; }
 .nav-button { display: flex; gap: 12px; align-items: center; width: 100%; border: 0; border-radius: 9px; padding: 12px 14px; background: transparent; color: #aeb9cf; text-align: left; }
 .nav-line-icon { width:18px!important;height:18px!important;border-radius:0!important;background:transparent!important;color:#8795b3!important;box-shadow:none!important }.nav-line-icon svg { width:18px!important;height:18px!important }.nav-button:hover { background: #ffffff0b; color: #fff; }.nav-button:hover .nav-line-icon,.nav-button.active .nav-line-icon { color:#dbe5ff!important }.nav-button.active { background: #2a3c61; color: #fff; box-shadow: inset 3px 0 #5c84ff; }
-.sidebar-status { margin-top: auto; display: grid; gap: 10px; border: 1px solid #ffffff0e; border-radius: 10px; padding: 12px; background: #ffffff08; }
-.sidebar-status-row { min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:flex-start }.sidebar-status-row.compact { padding-top:10px;border-top:1px solid #ffffff10 }.sidebar-mini-icon { width:18px!important;height:18px!important;margin-top:1px;border-radius:6px!important;background:#ffffff0d!important;color:#91a5d6!important;box-shadow:none!important }.sidebar-mini-icon svg { width:12px!important;height:12px!important }.sidebar-status small,.sidebar-status strong { display:block }.sidebar-status small { color:#7f8ca6;font-size:10px }.sidebar-status strong { max-width:145px;margin-top:3px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis }
-.status-dot { flex:0 0 auto;width:8px;height:8px;margin-top:3px;border-radius:50%;background:#f2b84b;box-shadow:0 0 0 4px #f2b84b18 }.status-dot.ready { background:#48c78e;box-shadow:0 0 0 4px #48c78e18 }
+.sidebar-status { margin-top: auto; display: grid; gap: 8px; border: 1px solid #ffffff12; border-radius: 10px; padding: 11px 12px; background: #ffffff08; }
+.sidebar-status-line { min-width:0;display:flex;align-items:center;gap:0;color:#8e9ab3;font-size:10px;line-height:1.35 }
+.sidebar-status-line.status-line { color:#a9b4ca;font-size:11px }
+.sidebar-status-label { flex:0 0 auto;color:#7f8ca6;font-weight:600 }
+.sidebar-status strong { min-width:0;display:block;color:#f5f7fb;font-size:10px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis }
+.sidebar-status-line.status-line strong { font-size:12px }
+.sidebar-status strong.ready { color:#49d08e }.sidebar-status strong.unavailable { color:#ff6f7c }.sidebar-status strong.active { color:#8fb0ff }
+.status-dot { flex:0 0 auto;width:8px;height:8px;margin-right:8px;border-radius:50%;background:#f05d6a;box-shadow:0 0 0 4px #f05d6a18 }.status-dot.ready { background:#48c78e;box-shadow:0 0 0 4px #48c78e18 }.status-dot.active { background:#4f7cff;box-shadow:0 0 0 4px #4f7cff18 }.status-dot.unavailable { background:#f05d6a;box-shadow:0 0 0 4px #f05d6a18 }
 .workspace { min-width:0;min-height:0;height:100%;position:relative;background:#f3f5f9;overflow:hidden; }
 .page { height:100%; padding:24px 28px 0; overflow:hidden; }
 .batch-page { display:grid;grid-template-rows:auto minmax(0,1fr) auto; }
@@ -59,6 +64,7 @@ button, .nav-button, .brand, .source-item, .terminology-item, .tabs button, .tex
 .app-shell { font-size:var(--ui-md, 13px); }
 .brand strong { font-size:var(--ui-brand)!important }.brand small,.sidebar-status small,.eyebrow,.source-copy small,.source-copy em,.job-status,.load-row small,.log-toolbar,.empty-state p,.action-bar span,.about-info-row small,.about-meta-item small,.about-component-main small,.about-privacy-list small,.settings-overview-item small,.field > small,.toggle-row span small,.terminology-item small,.terminology-item em,.terminology-terms b,.diagnostics-preview span,.voice-meter,.voice-meter strong,.live-mode-row,.live-session-stats small,.live-preparing,.live-current small,.live-segment time { font-size:var(--ui-xs)!important }
 .sidebar-status strong,.settings-overview-item strong,.panel-heading p,.text-actions button,.table-wrap table,.tabs button,.log-toolbar button,.field > span,.load-row strong,.notice p,.ai-status,.sample-result,.sample-textarea,.diagnostics-preview strong,.live-badge,.live-session-stats strong,.live-current strong,.error-banner { font-size:var(--ui-sm)!important }
+.sidebar-status .sidebar-status-line strong { font-size:10px!important }.sidebar-status .sidebar-status-line.status-line strong { font-size:12px!important }
 .field-note { margin:8px 0 0;color:#6f7b8f;font-size:11px;line-height:1.45 }
 .source-copy strong,.action-bar strong,.about-product-copy p,.about-info-row strong,.about-meta-item strong,.about-component-main strong,.about-privacy-list strong,.toggle-row span strong,.terminology-item strong { font-size:var(--ui-md)!important }
 .page-header p,.live-segment p { font-size:var(--ui-lg)!important }
