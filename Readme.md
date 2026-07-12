@@ -191,6 +191,18 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 - `-c 0`：使用编号为 `0` 的录音设备
 - 可先通过 `-ld` 查看设备列表
 
+#### 从 Agent 或脚本控制已打开的桌面端
+
+每日发布包同时提供 `whisperctl.exe`。它通过仅限当前 Windows 用户的本地命令通道，把文件送入正在运行的 WhisperDesktop，复用桌面端已经加载的模型、GPU 和任务队列。
+
+```powershell
+.\whisperctl.exe ping --json
+.\whisperctl.exe submit "D:\media\lesson.mp4" --json
+.\whisperctl.exe transcribe "D:\media\lesson.mp4" --json
+```
+
+`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait` 或 `--no-activate`。第一阶段的协议和边界见 [Agent 控制能力：第一阶段](docs/agent-control-phase-1.md)。
+
 ### 6. 运行前的注意事项
 
 - 请确保输出目录中存在 `Whisper.dll`

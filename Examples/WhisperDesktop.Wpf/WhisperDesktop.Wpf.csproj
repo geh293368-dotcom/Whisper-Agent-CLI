@@ -20,6 +20,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\WhisperNet\WhisperNet.csproj" />
+    <ProjectReference Include="..\WhisperDesktop.Protocol\WhisperDesktop.Protocol.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\x64\$(Configuration)\Whisper.dll" Link="Whisper.dll" Condition="Exists('..\..\x64\$(Configuration)\Whisper.dll')">

@@ -2,11 +2,15 @@ using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using WhisperDesktop.Modern.Services;
+using WhisperDesktop.Protocol;
 
 namespace WhisperDesktop.Modern;
 
 public partial class App : Application
 {
+    SingleInstanceCoordinator? singleInstance;
+    DesktopCommandServer? commandServer;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         _ = AppLogger.CurrentLogPath;
@@ -22,9 +26,133 @@ public partial class App : Application
             return;
         }
 
+        singleInstance = new SingleInstanceCoordinator();
+        if (!singleInstance.IsPrimaryInstance)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            _ = ForwardToPrimaryInstanceAsync(e.Args);
+            return;
+        }
+
         var window = new MainWindow();
         MainWindow = window;
+        commandServer = new DesktopCommandServer((request, cancellationToken) =>
+            DispatchDesktopCommandAsync(window, request, cancellationToken));
+        commandServer.Start();
         window.Show();
+
+        if (e.Args.Length > 0)
+            _ = HandleInitialCommandAsync(window, e.Args);
+    }
+
+    static async Task<DesktopCommandResponse> DispatchDesktopCommandAsync(
+        MainWindow window,
+        DesktopCommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        Task<DesktopCommandResponse> commandTask = await window.Dispatcher.InvokeAsync(
+            () => window.ExecuteDesktopCommandAsync(request, cancellationToken));
+        return await commandTask;
+    }
+
+    async Task ForwardToPrimaryInstanceAsync(string[] args)
+    {
+        int exitCode = 0;
+        try
+        {
+            if (!TryCreateDesktopRequest(args, out DesktopCommandRequest? request, out string? error))
+                throw new ArgumentException(error);
+
+            DesktopCommandResponse response = await DesktopCommandProtocol.SendAsync(
+                request!,
+                TimeSpan.FromSeconds(10));
+            if (!response.Success)
+            {
+                exitCode = 1;
+                MessageBox.Show(
+                    response.Message,
+                    "Whisper Desktop",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            exitCode = 1;
+            AppLogger.Write("Agent 命令", "转发到现有桌面实例失败", ex, "ERROR");
+            MessageBox.Show(ex.Message, "Whisper Desktop", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            Shutdown(exitCode);
+        }
+    }
+
+    static async Task HandleInitialCommandAsync(MainWindow window, string[] args)
+    {
+        if (!TryCreateDesktopRequest(args, out DesktopCommandRequest? request, out string? error))
+        {
+            AppLogger.Write("Agent 命令", error ?? "无法解析启动命令", level: "ERROR");
+            return;
+        }
+
+        DesktopCommandResponse response = await window.ExecuteDesktopCommandAsync(request!, CancellationToken.None);
+        AppLogger.Write("Agent 命令", response.Message, level: response.Success ? "INFO" : "ERROR");
+    }
+
+    static bool TryCreateDesktopRequest(
+        string[] args,
+        out DesktopCommandRequest? request,
+        out string? error)
+    {
+        error = null;
+        if (args.Length == 0)
+        {
+            request = new DesktopCommandRequest { Action = "ping", Activate = true };
+            return true;
+        }
+
+        bool start = false;
+        bool wait = false;
+        bool activate = true;
+        var paths = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--enqueue":
+                    if (++i >= args.Length)
+                    {
+                        request = null;
+                        error = "--enqueue 后需要提供文件或目录路径。";
+                        return false;
+                    }
+                    paths.Add(args[i]);
+                    break;
+                case "--start": start = true; break;
+                case "--wait": wait = true; start = true; break;
+                case "--no-activate": activate = false; break;
+                default:
+                    if (args[i].StartsWith('-'))
+                    {
+                        request = null;
+                        error = $"未知参数：{args[i]}";
+                        return false;
+                    }
+                    paths.Add(args[i]);
+                    break;
+            }
+        }
+
+        request = new DesktopCommandRequest
+        {
+            Action = paths.Count == 0 ? "ping" : "submit",
+            Paths = paths.ToArray(),
+            Start = start,
+            Wait = wait,
+            Activate = activate,
+        };
+        return true;
     }
 
     async Task RunAiVerifyAsync(string sampleDirectory)
@@ -108,6 +236,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        commandServer?.Dispose();
+        singleInstance?.Dispose();
         AppLogger.Write("应用", $"正常退出，退出代码 {e.ApplicationExitCode}");
         base.OnExit(e);
     }

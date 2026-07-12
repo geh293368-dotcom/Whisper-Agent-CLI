@@ -11,6 +11,7 @@ using System.Windows.Threading;
 using Whisper;
 using WhisperDesktop.Modern.Models;
 using WhisperDesktop.Modern.Services;
+using WhisperDesktop.Protocol;
 
 namespace WhisperDesktop.Modern;
 
@@ -38,6 +39,11 @@ public partial class MainWindow : Window
     {
         ".wav", ".wave", ".mp3", ".wma", ".mp4", ".mpeg4", ".mkv", ".m4a", ".aac", ".flac",
     };
+
+    sealed record PathImportResult(
+        IReadOnlyList<TranscriptionJob> Jobs,
+        IReadOnlyList<TranscriptionJob> AddedJobs,
+        IReadOnlyList<string> Errors);
 
     readonly List<TranscriptionJob> jobs = [];
     readonly List<SourceFolderItem> sourceFolders = [];
@@ -256,6 +262,164 @@ public partial class MainWindow : Window
         }
     }
 
+    internal async Task<DesktopCommandResponse> ExecuteDesktopCommandAsync(
+        DesktopCommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(request.ProtocolVersion, DesktopCommandProtocol.Version, StringComparison.Ordinal))
+        {
+            return DesktopCommandResponse.Failure(
+                $"不支持的命令协议版本：{request.ProtocolVersion}",
+                "unsupported_protocol",
+                request.RequestId);
+        }
+
+        if (request.Activate)
+            ActivateFromExternalCommand();
+
+        if (string.Equals(request.Action, "ping", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DesktopCommandResponse
+            {
+                RequestId = request.RequestId,
+                Success = true,
+                Message = "Whisper Desktop 已连接。",
+            };
+        }
+
+        if (!string.Equals(request.Action, "submit", StringComparison.OrdinalIgnoreCase))
+            return DesktopCommandResponse.Failure($"未知命令：{request.Action}", "unknown_action", request.RequestId);
+        if (request.Wait && !request.Start)
+            return DesktopCommandResponse.Failure("wait 需要和 start 一起使用。", "invalid_request", request.RequestId);
+        if (request.Paths.Length == 0)
+            return DesktopCommandResponse.Failure("请至少提供一个媒体文件或目录。", "invalid_request", request.RequestId);
+        if (isRunning || isScanningMedia || isLiveRunning || isLivePreparing || isAiRunning || (request.Start && isLoadingModel))
+            return DesktopCommandResponse.Failure("桌面端当前正忙，请等待现有操作结束后重试。", "desktop_busy", request.RequestId);
+
+        PathImportResult imported = await ImportPathsAsync(request.Paths, "Agent 命令");
+        if (imported.Jobs.Count == 0)
+        {
+            string invalidPathMessage = imported.Errors.Count == 0
+                ? "没有找到可导入的媒体文件。"
+                : string.Join("；", imported.Errors);
+            return DesktopCommandResponse.Failure(invalidPathMessage, "invalid_path", request.RequestId);
+        }
+
+        var requestedPaths = imported.Jobs
+            .Select(job => job.InputPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (request.Start)
+        {
+            if (request.Wait)
+            {
+                string? readinessError = await EnsureExternalModelReadyAsync();
+                if (readinessError is not null)
+                {
+                    return CreateDesktopResponse(
+                        request,
+                        imported.Jobs,
+                        false,
+                        readinessError,
+                        "model_unavailable");
+                }
+
+                await StartTranscriptionAsync(requestedPaths);
+            }
+            else
+            {
+                _ = RunExternalJobsAsync(requestedPaths);
+            }
+        }
+
+        bool completedWithFailure = request.Wait
+            && imported.Jobs.Any(job => job.State is JobState.Failed or JobState.Canceled);
+        bool producedOutput = imported.Jobs.Any(job => job.State == JobState.Completed);
+        bool success = !completedWithFailure && (!request.Wait || producedOutput);
+        string message = request.Wait
+            ? success
+                ? $"转录完成：{imported.Jobs.Count(job => job.State == JobState.Completed)} 个文件。"
+                : "转录没有完整成功，请检查任务结果。"
+            : request.Start
+                ? $"已提交 {imported.Jobs.Count} 个文件并开始处理。"
+                : $"已向桌面队列提交 {imported.Jobs.Count} 个文件。";
+
+        if (imported.Errors.Count > 0)
+            message += $" 跳过 {imported.Errors.Count} 个无效路径。";
+
+        return CreateDesktopResponse(
+            request,
+            imported.Jobs,
+            success,
+            message,
+            success ? null : "job_failed");
+    }
+
+    void ActivateFromExternalCommand()
+    {
+        if (!IsVisible)
+            Show();
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
+        Topmost = true;
+        Topmost = false;
+        Focus();
+    }
+
+    async Task<string?> EnsureExternalModelReadyAsync()
+    {
+        if (transcription.IsModelLoaded)
+            return null;
+        if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
+            return "桌面端尚未配置有效的 Whisper 模型。请先在设置页选择模型。";
+
+        await LoadModelAsync(automatic: true);
+        return transcription.IsModelLoaded ? null : $"模型加载失败：{modelStatus}";
+    }
+
+    async Task RunExternalJobsAsync(IReadOnlySet<string> requestedPaths)
+    {
+        try
+        {
+            string? readinessError = await EnsureExternalModelReadyAsync();
+            if (readinessError is not null)
+            {
+                AppendLog("Agent 命令", readinessError, level: "ERROR");
+                return;
+            }
+
+            await StartTranscriptionAsync(requestedPaths);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Agent 命令", "外部转录任务失败", ex, "ERROR");
+        }
+    }
+
+    static DesktopCommandResponse CreateDesktopResponse(
+        DesktopCommandRequest request,
+        IReadOnlyList<TranscriptionJob> commandJobs,
+        bool success,
+        string message,
+        string? errorCode) => new()
+    {
+        RequestId = request.RequestId,
+        Success = success,
+        Message = message,
+        ErrorCode = errorCode,
+        Jobs = commandJobs.Select(job => new DesktopCommandJob
+        {
+            JobId = job.InputPath,
+            InputPath = job.InputPath,
+            FileName = job.FileName,
+            Status = job.State.ToString().ToLowerInvariant(),
+            Progress = job.Progress,
+            OutputPath = job.OutputPath,
+            Error = job.Error,
+        }).ToArray(),
+    };
+
 #if DEBUG
     static async Task<Uri?> TryGetWebDevServerUriAsync()
     {
@@ -451,17 +615,7 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog(this) != true)
             return;
-        var added = new List<TranscriptionJob>();
-        foreach (string path in dialog.FileNames)
-        {
-            TranscriptionJob? job = AddJob(path, Path.GetDirectoryName(path));
-            if (job is not null)
-                added.Add(job);
-        }
-        RebuildSources();
-        QueueChanged();
-        LogImportSummary("添加文件", added);
-        await ProbeDurationsAsync(added);
+        await ImportPathsAsync(dialog.FileNames, "添加文件");
     }
 
     async Task AddFolderAsync()
@@ -472,28 +626,89 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) != true)
             return;
 
-        string root = dialog.FolderName;
-        int before = jobs.Count;
-        var added = new List<TranscriptionJob>();
-        try
+        await ImportPathsAsync([dialog.FolderName], "添加文件夹");
+    }
+
+    async Task<PathImportResult> ImportPathsAsync(IEnumerable<string> inputPaths, string source)
+    {
+        var commandJobs = new List<TranscriptionJob>();
+        var addedJobs = new List<TranscriptionJob>();
+        var errors = new List<string>();
+
+        foreach (string inputPath in inputPaths)
         {
-            foreach (string path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-                .Where(path => SupportedExtensions.Contains(Path.GetExtension(path))))
+            try
             {
-                TranscriptionJob? job = AddJob(path, root);
-                if (job is not null)
-                    added.Add(job);
+                string path = Path.GetFullPath(Environment.ExpandEnvironmentVariables(inputPath));
+                if (File.Exists(path))
+                {
+                    if (!SupportedExtensions.Contains(Path.GetExtension(path)))
+                    {
+                        errors.Add($"不支持的媒体格式：{path}");
+                        continue;
+                    }
+
+                    AddOrGetCommandJob(path, Path.GetDirectoryName(path), commandJobs, addedJobs);
+                    continue;
+                }
+
+                if (Directory.Exists(path))
+                {
+                    foreach (string mediaPath in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                        .Where(candidate => SupportedExtensions.Contains(Path.GetExtension(candidate))))
+                    {
+                        AddOrGetCommandJob(mediaPath, path, commandJobs, addedJobs);
+                    }
+                    continue;
+                }
+
+                errors.Add($"路径不存在：{path}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                errors.Add($"无法读取路径 {inputPath}：{ex.Message}");
             }
         }
-        catch (UnauthorizedAccessException ex)
+
+        if (addedJobs.Count > 0)
         {
-            AppendLog("扫描", $"部分目录无法访问：{ex.Message}");
+            RebuildSources();
+            QueueChanged();
+            LogImportSummary(source, addedJobs);
+            await ProbeDurationsAsync(addedJobs);
         }
-        RebuildSources();
-        globalStatus = $"从 {root} 添加了 {jobs.Count - before} 个媒体文件";
-        LogImportSummary("添加文件夹", added, root);
-        PublishState();
-        await ProbeDurationsAsync(added);
+        else
+        {
+            PublishState();
+        }
+
+        foreach (string error in errors)
+            AppendLog(source, error, level: "WARN");
+
+        return new PathImportResult(commandJobs, addedJobs, errors);
+    }
+
+    void AddOrGetCommandJob(
+        string path,
+        string? sourceRoot,
+        ICollection<TranscriptionJob> commandJobs,
+        ICollection<TranscriptionJob> addedJobs)
+    {
+        TranscriptionJob? existing = jobs.FirstOrDefault(job =>
+            string.Equals(job.InputPath, path, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            if (!commandJobs.Contains(existing))
+                commandJobs.Add(existing);
+            return;
+        }
+
+        TranscriptionJob? added = AddJob(path, sourceRoot);
+        if (added is not null)
+        {
+            commandJobs.Add(added);
+            addedJobs.Add(added);
+        }
     }
 
     TranscriptionJob? AddJob(string path, string? sourceRoot)
@@ -1079,9 +1294,12 @@ public partial class MainWindow : Window
         globalStatus = $"已切换到 {next.Name}";
     }
 
-    async Task StartTranscriptionAsync()
+    async Task StartTranscriptionAsync(IReadOnlySet<string>? requestedPaths = null)
     {
-        if (!CanStart)
+        TranscriptionJob[] selectedJobs = jobs.Where(job =>
+            (requestedPaths is null ? job.IsSelected : requestedPaths.Contains(job.InputPath))
+            && job.State != JobState.Skipped).ToArray();
+        if (!CanStartJobs(selectedJobs))
             return;
         if (selectedOutputLocation.Value != OutputLocationMode.SourceFolder && !Directory.Exists(outputFolder))
         {
@@ -1101,8 +1319,9 @@ public partial class MainWindow : Window
         previewSegments.Clear();
         int completed = 0;
         int failed = 0;
-        int skipped = jobs.Count(job => job.IsSelected && job.State == JobState.Skipped);
-        TranscriptionJob[] selectedJobs = jobs.Where(job => job.IsSelected && job.State != JobState.Skipped).ToArray();
+        int skipped = jobs.Count(job =>
+            (requestedPaths is null ? job.IsSelected : requestedPaths.Contains(job.InputPath))
+            && job.State == JobState.Skipped);
         ActiveTerminology activeTerminology = terminologyEnabled
             ? terminologyService.BuildActiveTerminology(terminologyPacks, selectedTerminologyPackIds)
             : new ActiveTerminology([], null, 0, []);
@@ -1528,6 +1747,15 @@ public partial class MainWindow : Window
     }
 
     bool CanStart => transcription.IsModelLoaded && jobs.Any(job => job.IsSelected && job.State != JobState.Skipped) && !isRunning && !isLoadingModel && !isScanningMedia && !isLiveRunning && !isAiRunning;
+
+    bool CanStartJobs(IReadOnlyCollection<TranscriptionJob> selectedJobs) =>
+        transcription.IsModelLoaded
+        && selectedJobs.Count > 0
+        && !isRunning
+        && !isLoadingModel
+        && !isScanningMedia
+        && !isLiveRunning
+        && !isAiRunning;
 
     bool CanStartAiSubtitleOptimization => IsSelectedAiModelConfigured
         && jobs.Any(job => job.IsSelected && File.Exists(Path.ChangeExtension(job.InputPath, ".srt")))

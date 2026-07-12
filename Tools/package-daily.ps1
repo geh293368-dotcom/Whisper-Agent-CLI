@@ -11,8 +11,11 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $project = Join-Path $repoRoot 'Examples\WhisperDesktop.Wpf\WhisperDesktop.Wpf.csproj'
+$cliProject = Join-Path $repoRoot 'Examples\WhisperDesktop.Cli\WhisperDesktop.Cli.csproj'
 $existingBuildOutput = Join-Path $repoRoot 'Examples\WhisperDesktop.Wpf\bin\x64\Release\net10.0-windows'
+$existingCliOutput = Join-Path $repoRoot 'Examples\WhisperDesktop.Cli\bin\Release\net10.0'
 $isolatedBuildOutput = Join-Path $repoRoot ".tmp\daily-build-$Date"
+$isolatedCliOutput = Join-Path $repoRoot ".tmp\daily-cli-build-$Date"
 $dailyRoot = Join-Path $repoRoot 'Releases\Daily'
 $dateRoot = Join-Path $dailyRoot $Date
 $packageName = "WhisperDesktop-$Date-win-x64"
@@ -31,13 +34,22 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) {
         throw "Release build failed with exit code $LASTEXITCODE."
     }
+    & dotnet build $cliProject -c Release -o $isolatedCliOutput
+    if ($LASTEXITCODE -ne 0) {
+        throw "whisperctl Release build failed with exit code $LASTEXITCODE."
+    }
     $buildOutput = $isolatedBuildOutput
+    $cliBuildOutput = $isolatedCliOutput
 } else {
     $buildOutput = $existingBuildOutput
+    $cliBuildOutput = $existingCliOutput
 }
 
 if (-not (Test-Path (Join-Path $buildOutput 'WhisperDesktop.Modern.exe'))) {
     throw "Build output was not found at '$buildOutput'. Run without -SkipBuild first."
+}
+if (-not (Test-Path (Join-Path $cliBuildOutput 'whisperctl.exe'))) {
+    throw "whisperctl build output was not found at '$cliBuildOutput'. Run without -SkipBuild first."
 }
 
 if (Test-Path $stagingRoot) {
@@ -50,6 +62,9 @@ Get-ChildItem -LiteralPath $buildOutput -Force | Where-Object {
     $_.Name -ne 'WhisperDesktop.Modern.exe.WebView2' -and
     ($IncludeSymbols -or $_.Extension -notin @('.pdb', '.xml'))
 } | Copy-Item -Destination $stagingApp -Recurse -Force
+Get-ChildItem -LiteralPath $cliBuildOutput -File | Where-Object {
+    $_.Name -like 'whisperctl.*' -and ($IncludeSymbols -or $_.Extension -ne '.pdb')
+} | Copy-Item -Destination $stagingApp -Force
 
 $commit = (& git -C $repoRoot rev-parse --short HEAD 2>$null)
 if ($LASTEXITCODE -ne 0) { $commit = 'unknown' }
@@ -66,6 +81,7 @@ Git commit: $commit
 Uncommitted changes: $dirty
 Configuration: Release / x64
 Runtime: framework-dependent (.NET 10 Desktop Runtime required)
+Agent control: whisperctl.exe (local Named Pipe protocol v1)
 "@ | Set-Content -LiteralPath (Join-Path $stagingApp 'BUILD-INFO.txt') -Encoding UTF8
 
 Compress-Archive -Path $stagingApp -DestinationPath $stagingZip -CompressionLevel Optimal -Force
@@ -81,6 +97,9 @@ Move-Item -LiteralPath $stagingZip -Destination $finalZip
 Remove-Item -LiteralPath $stagingRoot -Recurse -Force
 if (-not $SkipBuild -and (Test-Path $isolatedBuildOutput)) {
     Remove-Item -LiteralPath $isolatedBuildOutput -Recurse -Force
+}
+if (-not $SkipBuild -and (Test-Path $isolatedCliOutput)) {
+    Remove-Item -LiteralPath $isolatedCliOutput -Recurse -Force
 }
 
 @"
