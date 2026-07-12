@@ -57,6 +57,9 @@ public sealed record DesktopCommandRequest
     public string RequestId { get; init; } = Guid.NewGuid().ToString("N");
     public string Action { get; init; } = "submit";
     public string[] Paths { get; init; } = [];
+    public string? JobId { get; init; }
+    public string? ClientRequestId { get; init; }
+    public int Limit { get; init; } = 100;
     public bool Start { get; init; }
     public bool Wait { get; init; }
     public bool Activate { get; init; } = true;
@@ -69,7 +72,17 @@ public sealed record DesktopCommandJob
     public required string FileName { get; init; }
     public required string Status { get; init; }
     public double Progress { get; init; }
+    public bool CanCancel { get; init; }
+    public DateTime CreatedAtUtc { get; init; }
+    public DateTime UpdatedAtUtc { get; init; }
+    public double? DurationSeconds { get; init; }
+    public double? ElapsedSeconds { get; init; }
+    public string? Engine { get; init; }
+    public string? Language { get; init; }
+    public string? Format { get; init; }
+    public bool Translate { get; init; }
     public string? OutputPath { get; init; }
+    public bool OutputExists { get; init; }
     public string? Error { get; init; }
 }
 

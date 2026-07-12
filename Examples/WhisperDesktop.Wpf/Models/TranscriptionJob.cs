@@ -12,6 +12,7 @@ public enum JobState
     Failed,
     Canceled,
     Skipped,
+    Interrupted,
 }
 
 public sealed class TranscriptionJob : INotifyPropertyChanged
@@ -22,8 +23,12 @@ public sealed class TranscriptionJob : INotifyPropertyChanged
     string? error;
     bool isSelected = true;
 
+    public required string JobId { get; init; }
     public required string InputPath { get; init; }
     public string? SourceRoot { get; init; }
+    public string? ClientRequestId { get; set; }
+    public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public string FileName => Path.GetFileName(InputPath);
     public string FolderName => Path.GetDirectoryName(InputPath) ?? string.Empty;
     public string RelativePath => string.IsNullOrWhiteSpace(SourceRoot)
@@ -32,6 +37,12 @@ public sealed class TranscriptionJob : INotifyPropertyChanged
     public string? OutputPath { get; set; }
     public TimeSpan? Duration { get; set; }
     public TimeSpan? Elapsed { get; set; }
+    public string EngineId { get; set; } = string.Empty;
+    public string LanguageId { get; set; } = string.Empty;
+    public string FormatId { get; set; } = string.Empty;
+    public string OutputLocationId { get; set; } = string.Empty;
+    public string ConfiguredOutputFolder { get; set; } = string.Empty;
+    public bool Translate { get; set; }
 
     public bool IsSelected
     {
@@ -42,7 +53,12 @@ public sealed class TranscriptionJob : INotifyPropertyChanged
     public JobState State
     {
         get => state;
-        set { state = value; OnPropertyChanged(); }
+        set
+        {
+            state = value;
+            UpdatedAtUtc = DateTime.UtcNow;
+            OnPropertyChanged();
+        }
     }
 
     public double Progress

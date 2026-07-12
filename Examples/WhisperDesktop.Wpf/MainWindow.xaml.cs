@@ -51,6 +51,7 @@ public partial class MainWindow : Window
     readonly List<LiveSubtitleItem> liveSegments = [];
     readonly List<CaptureDeviceOption> captureDevices = [];
     readonly AppSettingsStore settingsStore = new();
+    readonly JobJournalStore jobJournalStore = new();
     readonly GeminiApiKeyStore geminiApiKeyStore = new();
     readonly GeminiModelClient geminiClient = new();
     readonly OpenAiCompatibleModelClient localAiClient = new();
@@ -84,6 +85,7 @@ public partial class MainWindow : Window
     CancellationTokenSource? aiCancellation;
     CancellationTokenSource? durationScanCancellation;
     CancellationTokenSource? liveCancellation;
+    readonly Dictionary<string, CancellationTokenSource> jobCancellations = new(StringComparer.OrdinalIgnoreCase);
     readonly LiveTranscriptionService liveTranscription = new();
     readonly DispatcherTimer liveTimer;
     readonly DispatcherTimer batchStatisticsTimer;
@@ -212,6 +214,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         Library.setLogSink(eLogLevel.Info, eLoggerFlags.SkipFormatMessage, OnNativeLog);
         AppendLog("应用", "Whisper Desktop 启动");
+        RestoreJobJournal();
     }
 
     async void OnWindowLoaded(object sender, RoutedEventArgs e)
@@ -277,82 +280,183 @@ public partial class MainWindow : Window
         if (request.Activate)
             ActivateFromExternalCommand();
 
-        if (string.Equals(request.Action, "ping", StringComparison.OrdinalIgnoreCase))
+        string action = request.Action.ToLowerInvariant();
+        if (action == "ping")
+            return CreateDesktopResponse(request, [], true, "Whisper Desktop 已连接。", null);
+        if (action == "list")
         {
-            return new DesktopCommandResponse
-            {
-                RequestId = request.RequestId,
-                Success = true,
-                Message = "Whisper Desktop 已连接。",
-            };
+            TranscriptionJob[] recentJobs = jobs
+                .OrderByDescending(job => job.UpdatedAtUtc)
+                .Take(Math.Clamp(request.Limit, 1, 500))
+                .ToArray();
+            return CreateDesktopResponse(request, recentJobs, true, $"返回 {recentJobs.Length} 个任务。", null);
         }
-
-        if (!string.Equals(request.Action, "submit", StringComparison.OrdinalIgnoreCase))
+        if (action == "start")
+            return HandleStartJobCommand(request);
+        if (action is "status" or "result" or "cancel")
+            return HandleJobCommand(request, action);
+        if (action != "submit")
             return DesktopCommandResponse.Failure($"未知命令：{request.Action}", "unknown_action", request.RequestId);
+
+        return await HandleSubmitCommandAsync(request, cancellationToken);
+    }
+
+    async Task<DesktopCommandResponse> HandleSubmitCommandAsync(
+        DesktopCommandRequest request,
+        CancellationToken cancellationToken)
+    {
         if (request.Wait && !request.Start)
             return DesktopCommandResponse.Failure("wait 需要和 start 一起使用。", "invalid_request", request.RequestId);
         if (request.Paths.Length == 0)
             return DesktopCommandResponse.Failure("请至少提供一个媒体文件或目录。", "invalid_request", request.RequestId);
-        if (isRunning || isScanningMedia || isLiveRunning || isLivePreparing || isAiRunning || (request.Start && isLoadingModel))
-            return DesktopCommandResponse.Failure("桌面端当前正忙，请等待现有操作结束后重试。", "desktop_busy", request.RequestId);
 
-        PathImportResult imported = await ImportPathsAsync(request.Paths, "Agent 命令");
-        if (imported.Jobs.Count == 0)
+        bool idempotentReplay = !string.IsNullOrWhiteSpace(request.ClientRequestId);
+        TranscriptionJob[] replayJobs = idempotentReplay
+            ? jobs.Where(job => string.Equals(
+                job.ClientRequestId,
+                request.ClientRequestId,
+                StringComparison.OrdinalIgnoreCase)).ToArray()
+            : [];
+
+        IReadOnlyList<TranscriptionJob> commandJobs;
+        IReadOnlyList<string> importErrors;
+        if (replayJobs.Length > 0)
         {
-            string invalidPathMessage = imported.Errors.Count == 0
+            commandJobs = replayJobs;
+            importErrors = [];
+        }
+        else
+        {
+            if (isScanningMedia)
+                return DesktopCommandResponse.Failure("桌面端正在扫描媒体，请稍后重试。", "desktop_busy", request.RequestId);
+            PathImportResult imported = await ImportPathsAsync(
+                request.Paths,
+                "Agent 命令",
+                request.ClientRequestId,
+                probeDurations: !isRunning && !isLiveRunning && !isAiRunning);
+            commandJobs = imported.Jobs;
+            importErrors = imported.Errors;
+        }
+
+        if (commandJobs.Count == 0)
+        {
+            string invalidPathMessage = importErrors.Count == 0
                 ? "没有找到可导入的媒体文件。"
-                : string.Join("；", imported.Errors);
+                : string.Join("；", importErrors);
             return DesktopCommandResponse.Failure(invalidPathMessage, "invalid_path", request.RequestId);
         }
 
-        var requestedPaths = imported.Jobs
-            .Select(job => job.InputPath)
+        var requestedJobIds = commandJobs
+            .Select(job => job.JobId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (request.Start)
+        bool replayAlreadyTerminal = replayJobs.Length > 0 && replayJobs.All(IsTerminal);
+        bool replayAlreadyRunning = commandJobs.Any(job => job.State == JobState.Running);
+        if (request.Start && !replayAlreadyTerminal)
         {
             if (request.Wait)
             {
-                string? readinessError = await EnsureExternalModelReadyAsync();
-                if (readinessError is not null)
-                {
-                    return CreateDesktopResponse(
-                        request,
-                        imported.Jobs,
-                        false,
-                        readinessError,
-                        "model_unavailable");
-                }
-
-                await StartTranscriptionAsync(requestedPaths);
+                if (!replayAlreadyRunning)
+                    await RunExternalJobsAsync(requestedJobIds);
+                await WaitForJobsAsync(requestedJobIds, cancellationToken);
             }
             else
             {
-                _ = RunExternalJobsAsync(requestedPaths);
+                if (!replayAlreadyRunning)
+                    _ = RunExternalJobsAsync(requestedJobIds);
             }
         }
 
         bool completedWithFailure = request.Wait
-            && imported.Jobs.Any(job => job.State is JobState.Failed or JobState.Canceled);
-        bool producedOutput = imported.Jobs.Any(job => job.State == JobState.Completed);
+            && commandJobs.Any(job => job.State is JobState.Failed or JobState.Canceled or JobState.Interrupted);
+        bool producedOutput = commandJobs.Any(job => job.State == JobState.Completed);
         bool success = !completedWithFailure && (!request.Wait || producedOutput);
         string message = request.Wait
             ? success
-                ? $"转录完成：{imported.Jobs.Count(job => job.State == JobState.Completed)} 个文件。"
+                ? $"转录完成：{commandJobs.Count(job => job.State == JobState.Completed)} 个文件。"
                 : "转录没有完整成功，请检查任务结果。"
             : request.Start
-                ? $"已提交 {imported.Jobs.Count} 个文件并开始处理。"
-                : $"已向桌面队列提交 {imported.Jobs.Count} 个文件。";
+                ? $"已提交 {commandJobs.Count} 个文件并进入处理队列。"
+                : $"已向桌面队列提交 {commandJobs.Count} 个文件。";
 
-        if (imported.Errors.Count > 0)
-            message += $" 跳过 {imported.Errors.Count} 个无效路径。";
+        if (replayJobs.Length > 0)
+            message = $"请求已存在，返回原任务：{commandJobs.Count} 个。";
+        if (importErrors.Count > 0)
+            message += $" 跳过 {importErrors.Count} 个无效路径。";
 
         return CreateDesktopResponse(
             request,
-            imported.Jobs,
+            commandJobs,
             success,
             message,
             success ? null : "job_failed");
+    }
+
+    DesktopCommandResponse HandleJobCommand(DesktopCommandRequest request, string action)
+    {
+        if (string.IsNullOrWhiteSpace(request.JobId))
+            return DesktopCommandResponse.Failure($"{action} 需要 jobId。", "invalid_request", request.RequestId);
+
+        TranscriptionJob? job = jobs.FirstOrDefault(item =>
+            string.Equals(item.JobId, request.JobId, StringComparison.OrdinalIgnoreCase));
+        if (job is null)
+            return DesktopCommandResponse.Failure($"任务不存在：{request.JobId}", "job_not_found", request.RequestId);
+
+        if (action == "status")
+            return CreateDesktopResponse(request, [job], true, $"任务状态：{job.State.ToString().ToLowerInvariant()}。", null);
+
+        if (action == "result")
+        {
+            if (job.State != JobState.Completed || string.IsNullOrWhiteSpace(job.OutputPath))
+                return CreateDesktopResponse(request, [job], false, "任务尚未产生可用结果。", "result_not_ready");
+            if (!File.Exists(job.OutputPath))
+                return CreateDesktopResponse(request, [job], false, "任务记录存在，但输出文件已经不存在。", "output_missing");
+            return CreateDesktopResponse(request, [job], true, "任务结果可用。", null);
+        }
+
+        if (IsTerminal(job))
+            return CreateDesktopResponse(request, [job], false, "任务已经结束，无法取消。", "cannot_cancel");
+
+        if (job.State == JobState.Running && jobCancellations.TryGetValue(job.JobId, out CancellationTokenSource? cancellation))
+        {
+            cancellation.Cancel();
+            return CreateDesktopResponse(request, [job], true, "已请求取消正在运行的任务。", null);
+        }
+
+        job.State = JobState.Canceled;
+        job.StatusText = "已取消";
+        job.IsSelected = false;
+        SaveJobJournal();
+        SendJobUpdate(job);
+        PublishState();
+        return CreateDesktopResponse(request, [job], true, "已取消等待中的任务。", null);
+    }
+
+    DesktopCommandResponse HandleStartJobCommand(DesktopCommandRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.JobId))
+            return DesktopCommandResponse.Failure("start 需要 jobId。", "invalid_request", request.RequestId);
+
+        TranscriptionJob? job = jobs.FirstOrDefault(item =>
+            string.Equals(item.JobId, request.JobId, StringComparison.OrdinalIgnoreCase));
+        if (job is null)
+            return DesktopCommandResponse.Failure($"任务不存在：{request.JobId}", "job_not_found", request.RequestId);
+        if (job.State == JobState.Running)
+            return CreateDesktopResponse(request, [job], true, "任务已经在运行。", null);
+
+        CaptureJobSettings(job);
+        job.State = JobState.Pending;
+        job.StatusText = "等待中";
+        job.Progress = 0;
+        job.Elapsed = null;
+        job.OutputPath = null;
+        job.Error = null;
+        job.IsSelected = true;
+        SaveJobJournal();
+        SendJobUpdate(job);
+        PublishState();
+        _ = RunExternalJobsAsync(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { job.JobId });
+        return CreateDesktopResponse(request, [job], true, "任务已进入处理队列。", null);
     }
 
     void ActivateFromExternalCommand()
@@ -378,24 +482,45 @@ public partial class MainWindow : Window
         return transcription.IsModelLoaded ? null : $"模型加载失败：{modelStatus}";
     }
 
-    async Task RunExternalJobsAsync(IReadOnlySet<string> requestedPaths)
+    async Task RunExternalJobsAsync(IReadOnlySet<string> requestedJobIds)
     {
         try
         {
+            while (isRunning || isLoadingModel || isScanningMedia || isLiveRunning || isLivePreparing || isAiRunning)
+                await Task.Delay(250);
+
             string? readinessError = await EnsureExternalModelReadyAsync();
             if (readinessError is not null)
             {
                 AppendLog("Agent 命令", readinessError, level: "ERROR");
+                foreach (TranscriptionJob job in jobs.Where(job => requestedJobIds.Contains(job.JobId) && !IsTerminal(job)))
+                {
+                    job.State = JobState.Failed;
+                    job.StatusText = "失败";
+                    job.Error = readinessError;
+                    SendJobUpdate(job);
+                }
+                SaveJobJournal();
                 return;
             }
 
-            await StartTranscriptionAsync(requestedPaths);
+            await StartTranscriptionAsync(requestedJobIds);
         }
         catch (Exception ex)
         {
             AppendLog("Agent 命令", "外部转录任务失败", ex, "ERROR");
         }
     }
+
+    async Task WaitForJobsAsync(IReadOnlySet<string> requestedJobIds, CancellationToken cancellationToken)
+    {
+        while (jobs.Any(job => requestedJobIds.Contains(job.JobId) && !IsTerminal(job)))
+            await Task.Delay(250, cancellationToken);
+    }
+
+    static bool IsTerminal(TranscriptionJob job) => job.State is
+        JobState.Completed or JobState.Failed or JobState.Canceled or
+        JobState.Skipped or JobState.Interrupted;
 
     static DesktopCommandResponse CreateDesktopResponse(
         DesktopCommandRequest request,
@@ -410,12 +535,22 @@ public partial class MainWindow : Window
         ErrorCode = errorCode,
         Jobs = commandJobs.Select(job => new DesktopCommandJob
         {
-            JobId = job.InputPath,
+            JobId = job.JobId,
             InputPath = job.InputPath,
             FileName = job.FileName,
             Status = job.State.ToString().ToLowerInvariant(),
             Progress = job.Progress,
+            CanCancel = !IsTerminal(job),
+            CreatedAtUtc = job.CreatedAtUtc,
+            UpdatedAtUtc = job.UpdatedAtUtc,
+            DurationSeconds = job.Duration?.TotalSeconds,
+            ElapsedSeconds = job.Elapsed?.TotalSeconds,
+            Engine = job.EngineId,
+            Language = job.LanguageId,
+            Format = job.FormatId,
+            Translate = job.Translate,
             OutputPath = job.OutputPath,
+            OutputExists = !string.IsNullOrWhiteSpace(job.OutputPath) && File.Exists(job.OutputPath),
             Error = job.Error,
         }).ToArray(),
     };
@@ -630,7 +765,11 @@ public partial class MainWindow : Window
         await ImportPathsAsync([dialog.FolderName], "添加文件夹");
     }
 
-    async Task<PathImportResult> ImportPathsAsync(IEnumerable<string> inputPaths, string source)
+    async Task<PathImportResult> ImportPathsAsync(
+        IEnumerable<string> inputPaths,
+        string source,
+        string? clientRequestId = null,
+        bool probeDurations = true)
     {
         var commandJobs = new List<TranscriptionJob>();
         var addedJobs = new List<TranscriptionJob>();
@@ -649,7 +788,7 @@ public partial class MainWindow : Window
                         continue;
                     }
 
-                    AddOrGetCommandJob(path, Path.GetDirectoryName(path), commandJobs, addedJobs);
+                    AddOrGetCommandJob(path, Path.GetDirectoryName(path), clientRequestId, commandJobs, addedJobs);
                     continue;
                 }
 
@@ -658,7 +797,7 @@ public partial class MainWindow : Window
                     foreach (string mediaPath in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
                         .Where(candidate => SupportedExtensions.Contains(Path.GetExtension(candidate))))
                     {
-                        AddOrGetCommandJob(mediaPath, path, commandJobs, addedJobs);
+                        AddOrGetCommandJob(mediaPath, path, clientRequestId, commandJobs, addedJobs);
                     }
                     continue;
                 }
@@ -676,10 +815,12 @@ public partial class MainWindow : Window
             RebuildSources();
             QueueChanged();
             LogImportSummary(source, addedJobs);
-            await ProbeDurationsAsync(addedJobs);
+            if (probeDurations)
+                await ProbeDurationsAsync(addedJobs);
         }
         else
         {
+            SaveJobJournal();
             PublishState();
         }
 
@@ -692,6 +833,7 @@ public partial class MainWindow : Window
     void AddOrGetCommandJob(
         string path,
         string? sourceRoot,
+        string? clientRequestId,
         ICollection<TranscriptionJob> commandJobs,
         ICollection<TranscriptionJob> addedJobs)
     {
@@ -699,12 +841,15 @@ public partial class MainWindow : Window
             string.Equals(job.InputPath, path, StringComparison.OrdinalIgnoreCase));
         if (existing is not null)
         {
+            if (!string.IsNullOrWhiteSpace(clientRequestId)
+                && !string.Equals(existing.ClientRequestId, clientRequestId, StringComparison.OrdinalIgnoreCase))
+                existing.ClientRequestId = clientRequestId;
             if (!commandJobs.Contains(existing))
                 commandJobs.Add(existing);
             return;
         }
 
-        TranscriptionJob? added = AddJob(path, sourceRoot);
+        TranscriptionJob? added = AddJob(path, sourceRoot, clientRequestId);
         if (added is not null)
         {
             commandJobs.Add(added);
@@ -712,11 +857,18 @@ public partial class MainWindow : Window
         }
     }
 
-    TranscriptionJob? AddJob(string path, string? sourceRoot)
+    TranscriptionJob? AddJob(string path, string? sourceRoot, string? clientRequestId)
     {
         if (jobs.Any(job => string.Equals(job.InputPath, path, StringComparison.OrdinalIgnoreCase)))
             return null;
-        var job = new TranscriptionJob { InputPath = path, SourceRoot = sourceRoot };
+        var job = new TranscriptionJob
+        {
+            JobId = $"job_{Guid.NewGuid():N}",
+            InputPath = path,
+            SourceRoot = sourceRoot,
+            ClientRequestId = clientRequestId,
+        };
+        CaptureJobSettings(job);
         jobs.Add(job);
         return job;
     }
@@ -792,7 +944,7 @@ public partial class MainWindow : Window
     {
         string? id = payload.GetProperty("id").GetString();
         bool selected = payload.GetProperty("selected").GetBoolean();
-        TranscriptionJob? job = jobs.FirstOrDefault(item => item.InputPath == id);
+        TranscriptionJob? job = jobs.FirstOrDefault(item => item.JobId == id);
         if (job is not null)
             job.IsSelected = selected && job.State != JobState.Skipped;
         RebuildSources();
@@ -830,6 +982,7 @@ public partial class MainWindow : Window
         sourceFolders.Clear();
         previewSegments.Clear();
         globalStatus = "队列已清空";
+        SaveJobJournal();
         PublishState();
     }
 
@@ -1295,11 +1448,12 @@ public partial class MainWindow : Window
         globalStatus = $"已切换到 {next.Name}";
     }
 
-    async Task StartTranscriptionAsync(IReadOnlySet<string>? requestedPaths = null)
+    async Task StartTranscriptionAsync(IReadOnlySet<string>? requestedJobIds = null)
     {
         TranscriptionJob[] selectedJobs = jobs.Where(job =>
-            (requestedPaths is null ? job.IsSelected : requestedPaths.Contains(job.InputPath))
-            && job.State != JobState.Skipped).ToArray();
+            (requestedJobIds is null ? job.IsSelected : requestedJobIds.Contains(job.JobId))
+            && job.State != JobState.Skipped
+            && (requestedJobIds is null || job.State != JobState.Canceled)).ToArray();
         if (!CanStartJobs(selectedJobs))
             return;
         if (selectedOutputLocation.Value != OutputLocationMode.SourceFolder && !Directory.Exists(outputFolder))
@@ -1321,7 +1475,7 @@ public partial class MainWindow : Window
         int completed = 0;
         int failed = 0;
         int skipped = jobs.Count(job =>
-            (requestedPaths is null ? job.IsSelected : requestedPaths.Contains(job.InputPath))
+            (requestedJobIds is null ? job.IsSelected : requestedJobIds.Contains(job.JobId))
             && job.State == JobState.Skipped);
         ActiveTerminology activeTerminology = terminologyEnabled
             ? terminologyService.BuildActiveTerminology(terminologyPacks, selectedTerminologyPackIds)
@@ -1329,13 +1483,15 @@ public partial class MainWindow : Window
         foreach (TranscriptionJob job in selectedJobs)
         {
             job.Elapsed = null;
-            if (job.State is JobState.Completed or JobState.Failed or JobState.Canceled)
+            CaptureJobSettings(job);
+            if (job.State is JobState.Completed or JobState.Failed or JobState.Canceled or JobState.Interrupted)
             {
                 job.State = JobState.Pending;
                 job.StatusText = "等待中";
                 job.Progress = 0;
             }
         }
+        SaveJobJournal();
         string outputLocation = selectedOutputLocation.Value == OutputLocationMode.SourceFolder
             ? selectedOutputLocation.Name
             : $"{selectedOutputLocation.Name}（{outputFolder}）";
@@ -1361,10 +1517,15 @@ public partial class MainWindow : Window
             foreach (TranscriptionJob job in selectedJobs)
             {
                 operationCancellation.Token.ThrowIfCancellationRequested();
+                if (job.State == JobState.Canceled)
+                    continue;
+                using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationCancellation.Token);
+                jobCancellations[job.JobId] = jobCancellation;
                 job.State = JobState.Running;
                 job.StatusText = "转录中";
                 job.Progress = 0;
                 job.Error = null;
+                SaveJobJournal();
                 globalStatus = $"正在处理 {job.FileName}";
                 int segmentIndex = 0;
                 Stopwatch jobStopwatch = Stopwatch.StartNew();
@@ -1396,7 +1557,7 @@ public partial class MainWindow : Window
                             previewSegments.Add(new SubtitlePreviewItem(++segmentIndex, job.FileName, segment.Begin, segment.End, segment.Text));
                             SendSegmentAdded(previewSegments[^1]);
                         }),
-                        operationCancellation.Token);
+                        jobCancellation.Token);
                     job.Progress = 1;
                     if (result.SegmentCount == 0 || string.IsNullOrWhiteSpace(result.OutputPath))
                     {
@@ -1421,7 +1582,8 @@ public partial class MainWindow : Window
                     job.Elapsed = jobStopwatch.Elapsed;
                     SendJobUpdate(job);
                     SendPatch(new { batchStatistics = CreateBatchStatistics() });
-                    throw;
+                    if (operationCancellation.IsCancellationRequested)
+                        throw;
                 }
                 catch (Exception ex)
                 {
@@ -1433,8 +1595,10 @@ public partial class MainWindow : Window
                 }
                 finally
                 {
+                    jobCancellations.Remove(job.JobId);
                     jobStopwatch.Stop();
                     job.Elapsed = jobStopwatch.Elapsed;
+                    SaveJobJournal();
                 }
                 if (job.State == JobState.Completed)
                 {
@@ -1459,6 +1623,7 @@ public partial class MainWindow : Window
             batchStatisticsTimer.Stop();
             batchStopwatch?.Stop();
             isRunning = false;
+            SaveJobJournal();
             object statistics = CreateBatchStatistics();
             AppendLog("批次", $"{globalStatus}；{FormatBatchSummary()}");
             SendPatch(new { isRunning, globalStatus, canStart = CanStart, batchStatistics = statistics });
@@ -1723,6 +1888,7 @@ public partial class MainWindow : Window
             hasBatchSpeedSample = false;
         }
         globalStatus = $"{jobs.Count} 个文件，已选择 {jobs.Count(job => job.IsSelected)} 个";
+        SaveJobJournal();
         PublishState();
     }
 
@@ -2161,7 +2327,7 @@ public partial class MainWindow : Window
 
     static object SerializeJob(TranscriptionJob job) => new
     {
-        id = job.InputPath,
+        id = job.JobId,
         job.FileName,
         job.InputPath,
         job.RelativePath,
@@ -2204,12 +2370,98 @@ public partial class MainWindow : Window
             durationScanCancellation?.Cancel();
             liveCancellation?.Cancel();
         }
+        SaveJobJournal();
         liveTimer.Stop();
         batchStatisticsTimer.Stop();
         modelLoadTimer.Stop();
         transcription.Dispose();
         captureMediaFoundation?.Dispose();
     }
+
+    void RestoreJobJournal()
+    {
+        IReadOnlyList<JobJournalStore.JobJournalEntry> entries = jobJournalStore.Load((message, exception) =>
+            AppendLog("任务日志", message, exception, "ERROR"));
+        bool recoveredInterruptedJob = false;
+
+        foreach (JobJournalStore.JobJournalEntry entry in entries.OrderBy(item => item.CreatedAtUtc))
+        {
+            if (string.IsNullOrWhiteSpace(entry.InputPath))
+                continue;
+
+            JobState restoredState = entry.State;
+            string statusText = entry.StatusText;
+            string? error = entry.Error;
+            DateTime updatedAtUtc = entry.UpdatedAtUtc == default ? DateTime.UtcNow : entry.UpdatedAtUtc;
+            if (restoredState == JobState.Running)
+            {
+                restoredState = JobState.Interrupted;
+                statusText = "上次运行中断";
+                error = "Whisper Desktop 上次退出时任务仍在运行，可重新提交该文件继续。";
+                updatedAtUtc = DateTime.UtcNow;
+                recoveredInterruptedJob = true;
+            }
+
+            var job = new TranscriptionJob
+            {
+                JobId = string.IsNullOrWhiteSpace(entry.JobId) ? $"job_{Guid.NewGuid():N}" : entry.JobId,
+                InputPath = entry.InputPath,
+                SourceRoot = entry.SourceRoot,
+                ClientRequestId = entry.ClientRequestId,
+                CreatedAtUtc = entry.CreatedAtUtc == default ? DateTime.UtcNow : entry.CreatedAtUtc,
+                OutputPath = entry.OutputPath,
+                Duration = entry.DurationSeconds is double duration ? TimeSpan.FromSeconds(duration) : null,
+                Elapsed = entry.ElapsedSeconds is double elapsed ? TimeSpan.FromSeconds(elapsed) : null,
+                EngineId = entry.EngineId,
+                LanguageId = entry.LanguageId,
+                FormatId = entry.FormatId,
+                OutputLocationId = entry.OutputLocationId,
+                ConfiguredOutputFolder = entry.ConfiguredOutputFolder,
+                Translate = entry.Translate,
+                IsSelected = entry.IsSelected,
+                Progress = entry.Progress,
+                StatusText = string.IsNullOrWhiteSpace(statusText) ? CreateStatusText(restoredState) : statusText,
+                Error = error,
+                State = restoredState,
+            };
+            job.UpdatedAtUtc = updatedAtUtc;
+            jobs.Add(job);
+        }
+
+        if (jobs.Count > 0)
+        {
+            RebuildSources();
+            AppendLog("任务日志", $"已恢复 {jobs.Count} 个任务，记录文件 {jobJournalStore.JournalPath}");
+        }
+        if (recoveredInterruptedJob)
+            SaveJobJournal();
+    }
+
+    void SaveJobJournal() => jobJournalStore.Save(jobs, (message, exception) =>
+        AppendLog("任务日志", message, exception, "ERROR"));
+
+    void CaptureJobSettings(TranscriptionJob job)
+    {
+        job.EngineId = selectedEngine.Id;
+        job.LanguageId = selectedLanguage.Id;
+        job.FormatId = selectedOutputFormat.Id;
+        job.OutputLocationId = selectedOutputLocation.Id;
+        job.ConfiguredOutputFolder = outputFolder;
+        job.Translate = translate;
+        job.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    static string CreateStatusText(JobState state) => state switch
+    {
+        JobState.Pending => "等待中",
+        JobState.Running => "转录中",
+        JobState.Completed => "完成",
+        JobState.Failed => "失败",
+        JobState.Canceled => "已取消",
+        JobState.Skipped => "已跳过",
+        JobState.Interrupted => "上次运行中断",
+        _ => state.ToString(),
+    };
 
     private void AddToRecentModels(string path)
     {

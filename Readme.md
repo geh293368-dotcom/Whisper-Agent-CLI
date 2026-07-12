@@ -213,9 +213,14 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 .\whisperctl.exe ping --json
 .\whisperctl.exe submit "D:\media\lesson.mp4" --json
 .\whisperctl.exe transcribe "D:\media\lesson.mp4" --json
+.\whisperctl.exe status <job-id> --json
+.\whisperctl.exe start <job-id> --json
+.\whisperctl.exe result <job-id> --json
+.\whisperctl.exe cancel <job-id> --json
+.\whisperctl.exe list --json
 ```
 
-`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait` 或 `--no-activate`。第一阶段的协议和边界见 [Agent 控制能力：第一阶段](docs/agent-control-phase-1.md)。
+`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait`、`--request-id` 或 `--no-activate`。任务记录保存在 `%LOCALAPPDATA%\WhisperDesktop\jobs.json`，桌面端重启后仍可凭 `jobId` 查询。协议说明见 [第一阶段](docs/agent-control-phase-1.md) 和 [第二阶段](docs/agent-control-phase-2.md)。
 
 ### 6. 运行前的注意事项
 

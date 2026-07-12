@@ -5,6 +5,8 @@ namespace WhisperDesktop.Cli;
 
 static class Program
 {
+    sealed record CliCommand(DesktopCommandRequest Request, bool Json, bool PollUntilTerminal = false);
+
     static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -15,7 +17,7 @@ static class Program
             return 0;
         }
 
-        if (!TryParse(args, out DesktopCommandRequest? request, out bool json, out string? error))
+        if (!TryParse(args, out CliCommand? command, out string? error))
         {
             if (!string.IsNullOrWhiteSpace(error))
                 Console.Error.WriteLine(error);
@@ -23,72 +25,116 @@ static class Program
             return 2;
         }
 
-        DesktopCommandResponse response = await DesktopCommandProtocol.SendAsync(
-            request!,
-            TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            cancellation.Cancel();
+        };
 
-        if (json)
+        DesktopCommandResponse response;
+        try
         {
-            Console.WriteLine(JsonSerializer.Serialize(response, DesktopCommandProtocol.JsonOptions));
+            response = command!.PollUntilTerminal
+                ? await WaitForTerminalStateAsync(command.Request.JobId!, cancellation.Token)
+                : await DesktopCommandProtocol.SendAsync(command.Request, TimeSpan.FromSeconds(5), cancellation.Token);
         }
-        else
+        catch (OperationCanceledException)
         {
-            TextWriter output = response.Success ? Console.Out : Console.Error;
-            output.WriteLine(response.Message);
-            foreach (DesktopCommandJob job in response.Jobs)
-            {
-                output.WriteLine($"[{job.Status}] {job.InputPath}");
-                if (!string.IsNullOrWhiteSpace(job.OutputPath))
-                    output.WriteLine($"  -> {job.OutputPath}");
-                if (!string.IsNullOrWhiteSpace(job.Error))
-                    output.WriteLine($"  {job.Error}");
-            }
+            Console.Error.WriteLine("操作已取消。");
+            return 130;
         }
 
+        WriteResponse(response, command!.Json);
         if (response.Success)
             return 0;
         return string.Equals(response.ErrorCode, "desktop_unavailable", StringComparison.OrdinalIgnoreCase) ? 3 : 4;
     }
 
-    static bool TryParse(
-        string[] args,
-        out DesktopCommandRequest? request,
-        out bool json,
-        out string? error)
+    static async Task<DesktopCommandResponse> WaitForTerminalStateAsync(
+        string jobId,
+        CancellationToken cancellationToken)
     {
-        request = null;
-        json = false;
-        error = null;
+        while (true)
+        {
+            DesktopCommandResponse response = await DesktopCommandProtocol.SendAsync(
+                new DesktopCommandRequest { Action = "status", JobId = jobId, Activate = false },
+                TimeSpan.FromSeconds(5),
+                cancellationToken);
+            if (!response.Success || response.Jobs.Length == 0)
+                return response;
 
+            string status = response.Jobs[0].Status;
+            if (status == "completed")
+                return response;
+            if (status is "failed" or "canceled" or "skipped" or "interrupted")
+            {
+                return new DesktopCommandResponse
+                {
+                    RequestId = response.RequestId,
+                    Success = false,
+                    Message = $"任务以 {status} 状态结束。",
+                    ErrorCode = $"job_{status}",
+                    Jobs = response.Jobs,
+                };
+            }
+
+            await Task.Delay(500, cancellationToken);
+        }
+    }
+
+    static void WriteResponse(DesktopCommandResponse response, bool json)
+    {
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(response, DesktopCommandProtocol.JsonOptions));
+            return;
+        }
+
+        TextWriter output = response.Success ? Console.Out : Console.Error;
+        output.WriteLine(response.Message);
+        foreach (DesktopCommandJob job in response.Jobs)
+        {
+            output.WriteLine($"[{job.Status}] {job.JobId}  {job.InputPath}");
+            if (!string.IsNullOrWhiteSpace(job.OutputPath))
+                output.WriteLine($"  -> {job.OutputPath}");
+            if (!string.IsNullOrWhiteSpace(job.Error))
+                output.WriteLine($"  {job.Error}");
+        }
+    }
+
+    static bool TryParse(string[] args, out CliCommand? command, out string? error)
+    {
+        command = null;
+        error = null;
         if (args.Length == 0 || args[0] is "-h" or "--help")
             return false;
 
-        string command = args[0].ToLowerInvariant();
-        if (command == "ping")
+        string action = args[0].ToLowerInvariant();
+        if (action == "ping")
+            return TryParseSimple(args, "ping", needsJobId: false, out command, out error);
+        if (action == "list")
+            return TryParseList(args, out command, out error);
+        if (action is "status" or "result" or "cancel" or "start")
+            return TryParseSimple(args, action, needsJobId: true, out command, out error);
+        if (action == "wait")
         {
-            foreach (string arg in args.Skip(1))
-            {
-                if (arg == "--json")
-                    json = true;
-                else
-                {
-                    error = $"未知参数：{arg}";
-                    return false;
-                }
-            }
-            request = new DesktopCommandRequest { Action = "ping", Activate = false };
+            if (!TryParseSimple(args, "status", needsJobId: true, out command, out error))
+                return false;
+            command = command! with { PollUntilTerminal = true };
             return true;
         }
-
-        if (command is not ("submit" or "transcribe"))
+        if (action is not ("submit" or "transcribe"))
         {
             error = $"未知命令：{args[0]}";
             return false;
         }
 
-        bool start = command == "transcribe";
-        bool wait = command == "transcribe";
+        bool start = action == "transcribe";
+        bool wait = action == "transcribe";
         bool activate = true;
+        bool json = false;
+        string? clientRequestId = null;
         var paths = new List<string>();
 
         for (int i = 1; i < args.Length; i++)
@@ -99,6 +145,14 @@ static class Program
                 case "--wait": wait = true; start = true; break;
                 case "--json": json = true; break;
                 case "--no-activate": activate = false; break;
+                case "--request-id":
+                    if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
+                    {
+                        error = "--request-id 后需要提供非空标识。";
+                        return false;
+                    }
+                    clientRequestId = args[i];
+                    break;
                 default:
                     if (args[i].StartsWith('-'))
                     {
@@ -116,14 +170,84 @@ static class Program
             return false;
         }
 
-        request = new DesktopCommandRequest
+        command = new CliCommand(new DesktopCommandRequest
         {
             Action = "submit",
             Paths = paths.ToArray(),
+            ClientRequestId = clientRequestId,
             Start = start,
             Wait = wait,
             Activate = activate,
-        };
+        }, json);
+        return true;
+    }
+
+    static bool TryParseSimple(
+        string[] args,
+        string action,
+        bool needsJobId,
+        out CliCommand? command,
+        out string? error)
+    {
+        command = null;
+        error = null;
+        string? jobId = null;
+        bool json = false;
+
+        for (int i = 1; i < args.Length; i++)
+        {
+            if (args[i] == "--json")
+                json = true;
+            else if (needsJobId && jobId is null && !args[i].StartsWith('-'))
+                jobId = args[i];
+            else
+            {
+                error = $"未知参数：{args[i]}";
+                return false;
+            }
+        }
+
+        if (needsJobId && string.IsNullOrWhiteSpace(jobId))
+        {
+            error = $"{action} 需要 jobId。";
+            return false;
+        }
+
+        command = new CliCommand(new DesktopCommandRequest
+        {
+            Action = action,
+            JobId = jobId,
+            Activate = false,
+        }, json);
+        return true;
+    }
+
+    static bool TryParseList(string[] args, out CliCommand? command, out string? error)
+    {
+        command = null;
+        error = null;
+        bool json = false;
+        int limit = 100;
+
+        for (int i = 1; i < args.Length; i++)
+        {
+            if (args[i] == "--json")
+                json = true;
+            else if (args[i] == "--limit" && ++i < args.Length && int.TryParse(args[i], out int parsed))
+                limit = Math.Clamp(parsed, 1, 500);
+            else
+            {
+                error = $"未知参数：{args[i]}";
+                return false;
+            }
+        }
+
+        command = new CliCommand(new DesktopCommandRequest
+        {
+            Action = "list",
+            Limit = limit,
+            Activate = false,
+        }, json);
         return true;
     }
 
@@ -133,8 +257,14 @@ static class Program
         Console.WriteLine();
         Console.WriteLine("用法：");
         Console.WriteLine("  whisperctl ping [--json]");
-        Console.WriteLine("  whisperctl submit <文件或目录>... [--start] [--wait] [--json] [--no-activate]");
-        Console.WriteLine("  whisperctl transcribe <文件或目录>... [--json] [--no-activate]");
+        Console.WriteLine("  whisperctl submit <文件或目录>... [--start] [--wait] [--request-id ID] [--json] [--no-activate]");
+        Console.WriteLine("  whisperctl transcribe <文件或目录>... [--request-id ID] [--json] [--no-activate]");
+        Console.WriteLine("  whisperctl status <job-id> [--json]");
+        Console.WriteLine("  whisperctl start <job-id> [--json]");
+        Console.WriteLine("  whisperctl wait <job-id> [--json]");
+        Console.WriteLine("  whisperctl result <job-id> [--json]");
+        Console.WriteLine("  whisperctl cancel <job-id> [--json]");
+        Console.WriteLine("  whisperctl list [--limit N] [--json]");
         Console.WriteLine();
         Console.WriteLine("transcribe 等价于 submit --start --wait。桌面端必须已经启动。");
     }
