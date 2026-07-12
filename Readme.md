@@ -10,6 +10,20 @@ WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字�
 
 ---
 
+## 作者与项目链接
+
+后续关于页的“关注作者”区域使用以下入口：
+
+| 平台 | 用途 | 链接 |
+|------|------|------|
+| GitHub | 源码与反馈 | <https://github.com/geh293368-dotcom> |
+| YouTube | 视频教程 | <https://www.youtube.com/@yelloweffect> |
+| Bilibili | 中文动态 | <https://space.bilibili.com/155950275> |
+| X / Twitter | 更新碎片 | <https://x.com/yelloweffect> |
+| 微信公众号 | 长期更新 | 待补充二维码 |
+
+---
+
 ## 快速开始
 
 1. 在 **Releases** 页面下载 WhisperDesktop

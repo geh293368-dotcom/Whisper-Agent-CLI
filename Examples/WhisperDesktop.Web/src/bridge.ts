@@ -214,6 +214,9 @@ class BrowserMockBridge implements DesktopBridge {
     } else if (action === 'clearLiveSegments') {
       mockState.liveSegments = []
       this.publish()
+    } else if (action === 'openExternal') {
+      const { url } = payload as { url?: string }
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
     }
   }
 

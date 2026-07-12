@@ -42,6 +42,7 @@ const formatGpuMemoryBytes = (bytes?: number) => {
 
 type AppLogoSize = 'small' | 'large'
 type LineIconName = 'window' | 'clock' | 'chip' | 'globe' | 'box' | 'folder' | 'file' | 'book' | 'spark' | 'shield' | 'link' | 'database' | 'wave' | 'queue' | 'mic' | 'settings' | 'activity' | 'monitor' | 'type' | 'brain' | 'key' | 'check' | 'alert'
+type SocialIconName = 'github' | 'youtube' | 'bilibili' | 'x' | 'wechat'
 
 function AppLogo({ size = 'small', className = '' }: { size?: AppLogoSize; className?: string }) {
   const classNames = ['app-logo', `app-logo-${size}`, className].filter(Boolean).join(' ')
@@ -135,6 +136,31 @@ function LineIcon({ name, className = '' }: { name: LineIconName; className?: st
 
   const classNames = ['line-icon', className].filter(Boolean).join(' ')
   return <span className={classNames} aria-hidden="true">
+    <svg viewBox="0 0 24 24" focusable="false">{content}</svg>
+  </span>
+}
+
+function SocialIcon({ name }: { name: SocialIconName }) {
+  let content: ReactNode
+  switch (name) {
+    case 'github':
+      content = <><path d="M8 19.5c-3.5-1-5.5-3.7-5.5-7.5 0-5 4-8.5 9.5-8.5s9.5 3.5 9.5 8.5c0 3.8-2 6.5-5.5 7.5" /><path d="M9 19.5V16c-2.5.5-3.5-.5-4.5-2M15 19.5V16c2.5.5 3.5-.5 4.5-2" /><path d="M8.5 7l-1-2.5M15.5 7l1-2.5" /></>
+      break
+    case 'youtube':
+      content = <><rect x="3.5" y="6" width="17" height="12" rx="4" /><path d="M10.5 9v6l5-3z" /><path className="teal" d="M18 17.5c1.5-1 2.5-2.5 2.5-4.5" /></>
+      break
+    case 'bilibili':
+      content = <><path d="M8 7l-2.5-3.5M16 7l2.5-3.5" /><rect x="4.5" y="7" width="15" height="12.5" rx="4" /><path d="M9 12.5h.01M15 12.5h.01M9.5 16h5" /><path className="teal" d="M6.5 19h2.5M15 19h2.5" /></>
+      break
+    case 'x':
+      content = <><path d="M6 4.5l12.5 15M18 4.5L5.5 19.5" /><path className="teal" d="M15 15l3.5 4.5" /></>
+      break
+    case 'wechat':
+      content = <><path d="M4 11.5c0-4 3.5-7 8.5-7 4 0 7.5 2 8.5 5.5" /><path d="M4.5 18l1.5-3c-1-1-2-2-2-3.5" /><path d="M11 15c0-3 2.5-5 6-5s6 2 6 5-2.5 5-6 5c-1 0-2-.15-2.75-.5L11.5 21l1-2.5" /><path d="M9 11h.01M14.5 11h.01M15.5 15h.01M19.5 15h.01" /><path className="teal" d="M19 19l2 2" /></>
+      break
+  }
+
+  return <span className="social-icon" aria-hidden="true">
     <svg viewBox="0 0 24 24" focusable="false">{content}</svg>
   </span>
 }
@@ -303,7 +329,7 @@ function App() {
           setPreviewTab={setPreviewTab} command={command} />}
         {page === 'live' && <LivePage state={state} command={command} updateSetting={updateSetting} />}
         {page === 'settings' && <SettingsPage state={state} command={command} updateSetting={updateSetting} />}
-        {page === 'about' && <AboutPage state={state} onBack={closeAbout} />}
+        {page === 'about' && <AboutPage state={state} command={command} onBack={closeAbout} />}
       </main>
     </div>
   )
@@ -314,6 +340,20 @@ function NavButton({ active, label, icon, onClick }: { active: boolean; label: s
 }
 
 type Command = (action: string, payload?: unknown) => void
+
+const authorLinks: {
+  id: SocialIconName
+  label: string
+  caption: string
+  url?: string
+  featured?: boolean
+}[] = [
+  { id: 'github', label: 'GitHub', caption: '源码与反馈', url: 'https://github.com/geh293368-dotcom', featured: true },
+  { id: 'youtube', label: 'YouTube', caption: '视频教程', url: 'https://www.youtube.com/@yelloweffect', featured: true },
+  { id: 'bilibili', label: 'Bilibili', caption: '中文动态', url: 'https://space.bilibili.com/155950275' },
+  { id: 'x', label: 'X / Twitter', caption: '更新碎片', url: 'https://x.com/yelloweffect' },
+  { id: 'wechat', label: '微信公众号', caption: '二维码待补充' },
+]
 
 function BatchPage({ state, selectedCount, previewTab, setPreviewTab, command }: {
   state: AppState; selectedCount: number; previewTab: 'segments' | 'logs';
@@ -542,7 +582,7 @@ function LivePage({ state, command, updateSetting }: { state: AppState; command:
   </div>
 }
 
-function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
+function AboutPage({ state, command, onBack }: { state: AppState; command: Command; onBack(): void }) {
   const selectedEngine = state.engines.find(engine => engine.id === state.selectedEngine)?.name || state.selectedEngine || '未选择'
   const selectedLanguage = state.languages.find(language => language.id === state.selectedLanguage)?.name || state.selectedLanguage || '未选择'
   const activeTerminologyPacks = state.terminologyPacks.filter(pack => pack.selected).map(pack => pack.name).join('、') || '未启用'
@@ -594,6 +634,33 @@ function AboutPage({ state, onBack }: { state: AppState; onBack(): void }) {
           <div className="about-meta-item"><small>模型</small><strong title={modelBadge}>{modelBadge}</strong></div>
           <div className="about-meta-item"><small>构建</small><strong title={state.buildTime || '未知'}>{state.buildTime || '未知'}</strong></div>
         </div>
+      </div>
+    </section>
+
+    <section className="author-follow-card panel" aria-label="关注作者">
+      <header className="author-follow-head">
+        <LineIcon name="brain" className="author-follow-head-icon" />
+        <h2>关注作者</h2>
+        <span aria-hidden="true" />
+        <p>获取教程、更新与更多工具</p>
+      </header>
+      <button className="author-follow-arrow" type="button" onClick={() => command('openExternal', { url: 'https://github.com/geh293368-dotcom' })} aria-label="打开作者 GitHub">›</button>
+      <div className="author-social-row">
+        {authorLinks.map(link => {
+          const disabled = !link.url
+          return <button
+            key={link.id}
+            className={`author-social-entry ${link.featured ? 'featured' : ''} ${disabled ? 'disabled' : ''}`}
+            type="button"
+            disabled={disabled}
+            onClick={() => link.url && command('openExternal', { url: link.url })}
+            title={link.url || '微信公众号二维码待补充'}
+          >
+            {link.featured && <span className="author-ribbon"><span>推荐</span></span>}
+            <SocialIcon name={link.id} />
+            <span className="author-social-copy"><strong>{link.label}</strong><small>{link.caption}</small></span>
+          </button>
+        })}
       </div>
     </section>
 

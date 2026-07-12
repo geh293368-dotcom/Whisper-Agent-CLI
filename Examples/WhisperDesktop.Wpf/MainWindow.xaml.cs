@@ -482,6 +482,7 @@ public partial class MainWindow : Window
             case "exportLive": ExportLiveSegments(command.Payload); break;
             case "openLogFolder": OpenLogFolder(); break;
             case "openTerminologyFolder": OpenTerminologyFolder(); break;
+            case "openExternal": OpenExternal(command.Payload); break;
             case "refreshTerminology": LoadTerminologyPacks(); PublishState(); break;
             case "setTerminologyPackSelected": SetTerminologyPackSelected(command.Payload); break;
             case "saveGeminiApiKey": SaveGeminiApiKey(command.Payload); break;
@@ -1918,6 +1919,20 @@ public partial class MainWindow : Window
     {
         Directory.CreateDirectory(terminologyService.DirectoryPath);
         Process.Start(new ProcessStartInfo("explorer.exe", terminologyService.DirectoryPath) { UseShellExecute = true });
+    }
+
+    void OpenExternal(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("url", out JsonElement urlElement))
+            return;
+
+        string? url = urlElement.GetString();
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
+            return;
+        if (uri.Scheme is not ("http" or "https"))
+            return;
+
+        Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
     }
 
     void LoadTerminologyPacks()
