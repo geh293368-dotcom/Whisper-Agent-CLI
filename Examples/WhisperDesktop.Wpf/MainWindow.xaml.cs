@@ -242,7 +242,7 @@ public partial class MainWindow : Window
         [
             new("cuda", "whisper.cpp 1.9.1（CUDA / NVIDIA，推荐）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCuda.dll")),
             new("cpu", "whisper.cpp 1.9.1（CPU，兼容）", () => new WhisperCppTranscriptionEngine("WhisperCppBackendCpu.dll")),
-            new("d3d11", "WhisperDesktop D3D11（兼容版）", () => new TranscriptionService()),
+            new("d3d11", "D3D11（兼容版）", () => new TranscriptionService()),
         ];
         languages =
         [
@@ -291,7 +291,7 @@ public partial class MainWindow : Window
 
         InitializeComponent();
         Library.setLogSink(eLogLevel.Info, eLoggerFlags.SkipFormatMessage, OnNativeLog);
-        AppendLog("应用", "Whisper Desktop 启动");
+        AppendLog("应用", "听录 TINGLU 启动");
         RestoreJobJournal();
     }
 
@@ -360,7 +360,7 @@ public partial class MainWindow : Window
 
         string action = request.Action.ToLowerInvariant();
         if (action == "ping")
-            return CreateDesktopResponse(request, [], true, "Whisper Desktop 已连接。", null);
+            return CreateDesktopResponse(request, [], true, "听录 TINGLU 已连接。", null);
         if (action is "ui-state" or "screenshot")
             return await HandleUiObservationCommandAsync(request, action == "screenshot", cancellationToken);
         if (action == "list")
@@ -2578,7 +2578,7 @@ public partial class MainWindow : Window
             {
                 restoredState = JobState.Interrupted;
                 statusText = "上次运行中断";
-                error = "Whisper Desktop 上次退出时任务仍在运行，可重新提交该文件继续。";
+                error = "听录上次退出时任务仍在运行，可重新提交该文件继续。";
                 updatedAtUtc = DateTime.UtcNow;
                 recoveredInterruptedJob = true;
             }

@@ -1,5 +1,7 @@
 # 模型与设置页面设计图评估
 
+> 历史设计评估：设计图使用旧工程名 `WhisperDesktop`；当前用户可见品牌为“听录 TINGLU”。
+
 ![模型与设置设计图](../../images/design-concepts/settings-concept.png)
 
 ## 页面定位
@@ -12,7 +14,7 @@
 
 设计图结构：
 
-- 品牌：WhisperDesktop，本地 AI 字幕工作站。
+- 品牌：听录 TINGLU，本地 AI 字幕工作站。
 - 导航：批量字幕、实时字幕、模型与设置、工具箱、历史记录。
 - 底部：设置、关于。
 - 系统状态卡：就绪、GPU、显存。

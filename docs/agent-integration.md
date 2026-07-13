@@ -1,6 +1,6 @@
 # Agent 与自动化接入指南
 
-WhisperDesktop 除了提供图形界面，也可以作为本机语音转录任务宿主。Agent、脚本或剪辑软件通过 `whisperctl.exe` 把媒体提交给已经运行的桌面端，复用桌面端加载的模型、GPU、配置和串行任务队列。
+听录（TINGLU）除了提供图形界面，也可以作为本机语音转录任务宿主。Agent、脚本或剪辑软件通过 `whisperctl.exe` 把媒体提交给已经运行的桌面端，复用桌面端加载的模型、GPU、配置和串行任务队列。
 
 这是一套本机自动化接口，不是通用桌面控制或完整 Agent 平台。当前没有 MCP 服务器，也不开放鼠标点击、键盘输入、任意 JavaScript 或通用 CDP 调用。
 
@@ -9,7 +9,7 @@ WhisperDesktop 除了提供图形界面，也可以作为本机语音转录任�
 ```text
 用户操作 React 界面 ───────────────┐
                                   ▼
-Agent / 脚本 → whisperctl.exe → Named Pipe → WhisperDesktop.Modern.exe
+Agent / 脚本 → whisperctl.exe → Named Pipe → 听录桌面端（WhisperDesktop.Modern.exe）
                                                 │
                                                 ├─ 已加载的 Whisper 模型
                                                 ├─ CPU / CUDA / D3D11 后端

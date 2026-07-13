@@ -2,7 +2,7 @@
 
 > 本文记录界面观察层的实现与边界。完整接入流程以 [Agent 与自动化接入指南](agent-integration.md) 为准。
 
-WhisperDesktop 为 Agent 提供只读界面观察命令。它们复用现有本地 Named Pipe，不开放鼠标点击、键盘输入、任意 JavaScript 或通用 CDP 调用。
+听录为 Agent 提供只读界面观察命令。它们复用现有本地 Named Pipe，不开放鼠标点击、键盘输入、任意 JavaScript 或通用 CDP 调用。
 
 ## 读取语义状态
 
@@ -43,7 +43,7 @@ WhisperDesktop 为 Agent 提供只读界面观察命令。它们复用现有本�
 
 ## 当前边界
 
-- 截图使用 WebView2 原生 `CapturePreviewAsync`，覆盖 WhisperDesktop 的 React 主界面。
+- 截图使用 WebView2 原生 `CapturePreviewAsync`，覆盖听录的 React 主界面。
 - Windows 文件选择器、文件夹选择器、原生 `MessageBox` 和标题栏不属于 WebView 内容，第一版不保证出现在截图中。
 - 观察命令不会激活、还原或改变窗口，也不会修改当前页面和焦点。
 - 截图可能包含本机路径、媒体文件名和字幕内容；调用方负责保护和清理自己指定的输出文件。

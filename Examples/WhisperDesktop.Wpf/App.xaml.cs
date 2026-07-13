@@ -71,7 +71,7 @@ public partial class App : Application
                 exitCode = 1;
                 MessageBox.Show(
                     response.Message,
-                    "Whisper Desktop",
+                    "听录 TINGLU",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
             }
@@ -80,7 +80,7 @@ public partial class App : Application
         {
             exitCode = 1;
             AppLogger.Write("Agent 命令", "转发到现有桌面实例失败", ex, "ERROR");
-            MessageBox.Show(ex.Message, "Whisper Desktop", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, "听录 TINGLU", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -247,7 +247,7 @@ public partial class App : Application
         AppLogger.Write("界面未处理异常", e.Exception.Message, e.Exception, "FATAL");
         MessageBox.Show(
             $"程序遇到未处理异常，详细信息已写入日志：{Environment.NewLine}{AppLogger.CurrentLogPath}",
-            "Whisper Desktop",
+            "听录 TINGLU",
             MessageBoxButton.OK,
             MessageBoxImage.Error);
     }

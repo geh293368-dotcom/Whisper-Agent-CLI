@@ -18,11 +18,11 @@ $isolatedBuildOutput = Join-Path $repoRoot ".tmp\daily-build-$Date"
 $isolatedCliOutput = Join-Path $repoRoot ".tmp\daily-cli-build-$Date"
 $dailyRoot = Join-Path $repoRoot 'Releases\Daily'
 $dateRoot = Join-Path $dailyRoot $Date
-$packageName = "WhisperDesktop-$Date-win-x64"
-$finalApp = Join-Path $dateRoot 'WhisperDesktop'
+$packageName = "Tinglu-$Date-win-x64"
+$finalApp = Join-Path $dateRoot 'Tinglu'
 $finalZip = Join-Path $dateRoot "$packageName.zip"
 $stagingRoot = Join-Path $repoRoot ".tmp\daily-package-$Date"
-$stagingApp = Join-Path $stagingRoot 'WhisperDesktop'
+$stagingApp = Join-Path $stagingRoot 'Tinglu'
 $stagingZip = Join-Path $stagingRoot "$packageName.zip"
 
 if (-not $SkipBuild) {
@@ -73,7 +73,7 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($branch)) { $branch = '
 $dirty = -not [string]::IsNullOrWhiteSpace((& git -C $repoRoot status --porcelain 2>$null | Out-String))
 
 @"
-WhisperDesktop daily build
+TINGLU daily build
 Package date: $Date
 Built at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
 Git branch: $branch
@@ -104,7 +104,7 @@ if (-not $SkipBuild -and (Test-Path $isolatedCliOutput)) {
 
 @"
 Latest daily package: $Date
-Folder: Releases\Daily\$Date\WhisperDesktop
+Folder: Releases\Daily\$Date\Tinglu
 Archive: Releases\Daily\$Date\$packageName.zip
 "@ | Set-Content -LiteralPath (Join-Path $dailyRoot 'LATEST.txt') -Encoding UTF8
 

@@ -42,7 +42,7 @@
 - `failed`：模型、媒体或输出过程失败。
 - `canceled`：调用方或用户取消。
 - `skipped`：没有有效音轨或没有识别出可输出内容。
-- `interrupted`：WhisperDesktop 上次退出时任务仍在运行。
+- `interrupted`：听录上次退出时任务仍在运行。
 
 第二阶段不会尝试从音频中间断点续算。`interrupted` 任务可以重新提交原文件继续，新的运行会重用原任务记录。
 

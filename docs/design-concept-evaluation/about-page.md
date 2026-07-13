@@ -1,5 +1,7 @@
 # 关于页面设计图评估
 
+> 历史设计评估：设计图使用旧工程名 `Whisper Desktop`；当前用户可见品牌为“听录 TINGLU”。
+
 ![关于页面设计图](../../images/design-concepts/about-concept.png)
 
 ## 页面定位
@@ -57,7 +59,7 @@
 设计图结构：
 
 - 应用 Logo。
-- 产品名：Whisper Desktop。
+- 产品名：听录 TINGLU。
 - 标签：本地 AI 字幕工作站。
 - 产品说明：基于 whisper.cpp 的本地语音识别与字幕生成工具。
 - 右侧：本地运行中、版本、编译时间。

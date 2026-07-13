@@ -35,7 +35,7 @@ const mockState: AppState = {
   engines: [
     { id: 'cuda', name: 'whisper.cpp 1.9.1（CUDA / NVIDIA，推荐）' },
     { id: 'cpu', name: 'whisper.cpp 1.9.1（CPU，兼容）' },
-    { id: 'd3d11', name: 'WhisperDesktop D3D11（兼容版）' },
+    { id: 'd3d11', name: 'D3D11（兼容版）' },
   ],
   languages: [
     { id: 'zh', name: '中文' }, { id: 'yue', name: '粤语' }, { id: 'en', name: '英语' },

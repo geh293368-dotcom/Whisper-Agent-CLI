@@ -1,6 +1,6 @@
-# WhisperDesktop（Windows）
+# 听录 TINGLU（Windows）
 
-WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字工具与自动化任务宿主，
+听录（TINGLU，工程名 `WhisperDesktop`）是一个运行在 **Windows 64 位**上的本地语音转文字工具与自动化任务宿主，
 基于 OpenAI Whisper 模型的 C/C++ 实现，可将音频、视频或麦克风输入转录为文本。除了图形界面，
 它还提供 `whisperctl.exe`，让 Agent、脚本或剪辑软件复用桌面端已经加载的模型、GPU 和任务队列。
 
@@ -28,7 +28,7 @@ WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字�
 
 ## 快速开始
 
-1. 在 **Releases** 页面下载 WhisperDesktop
+1. 在 **Releases** 页面下载听录发布包
 2. 解压后运行 `WhisperDesktop.Modern.exe`
 3. 首次使用请先下载并加载模型（推荐 `ggml-medium.bin`）
 
@@ -96,8 +96,8 @@ Tools\package-daily.cmd
 脚本会先执行 `Release / x64` 编译，然后输出：
 
 ```text
-Releases\Daily\2026-06-13\WhisperDesktop\
-Releases\Daily\2026-06-13\WhisperDesktop-2026-06-13-win-x64.zip
+Releases\Daily\2026-06-13\Tinglu\
+Releases\Daily\2026-06-13\Tinglu-2026-06-13-win-x64.zip
 ```
 
 同一天重复执行会更新当天的包，不会产生按小时命名的多个版本。每个包内的
@@ -220,7 +220,7 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 
 #### 从 Agent、脚本或外部应用控制已打开的桌面端
 
-每日发布包同时提供 `whisperctl.exe`。它通过仅限当前 Windows 用户的本地命令通道，把文件送入正在运行的 WhisperDesktop，复用桌面端已经加载的模型、GPU 和任务队列。
+每日发布包同时提供 `whisperctl.exe`。它通过仅限当前 Windows 用户的本地命令通道，把文件送入正在运行的听录桌面端，复用桌面端已经加载的模型、GPU 和任务队列。
 
 ```powershell
 .\whisperctl.exe ping --json
