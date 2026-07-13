@@ -11,6 +11,9 @@
 
 ## 规划中
 
+- [Microsoft Store 发行版开发计划](microsoft-store-release-plan.md)
+  - 规划 MSIX、自包含运行时、内置多语言模型、简体中文/英语本地化、隐私与 AI 合规、商店素材及认证测试。
+  - 明确区分界面语言与语音识别语言，并按首版阻塞项、后续语言和增强功能分阶段执行。
 - [本地 AI 字幕后处理与 RAG 设计](ai-subtitle-postprocessing-rag.md)
   - 使用 Gemma 4 对 Whisper 字幕进行标点、断句、保守纠错和翻译润色。
   - 使用术语库、历史修正和虚拟领域画像进行检索增强。
