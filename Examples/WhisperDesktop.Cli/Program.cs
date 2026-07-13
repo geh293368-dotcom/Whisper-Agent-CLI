@@ -101,6 +101,14 @@ static class Program
             if (!string.IsNullOrWhiteSpace(job.Error))
                 output.WriteLine($"  {job.Error}");
         }
+        if (response.Ui is not null)
+        {
+            output.WriteLine($"页面：{response.Ui.Page ?? "未知"}  面板：{response.Ui.Panel ?? "无"}");
+            if (response.Ui.FocusedElement is not null)
+                output.WriteLine($"焦点：{response.Ui.FocusedElement.Role ?? response.Ui.FocusedElement.Tag} {response.Ui.FocusedElement.Name}".TrimEnd());
+            if (!string.IsNullOrWhiteSpace(response.Ui.ScreenshotPath))
+                output.WriteLine($"截图：{response.Ui.ScreenshotPath}");
+        }
     }
 
     static bool TryParse(string[] args, out CliCommand? command, out string? error)
@@ -113,6 +121,10 @@ static class Program
         string action = args[0].ToLowerInvariant();
         if (action == "ping")
             return TryParseSimple(args, "ping", needsJobId: false, out command, out error);
+        if (action == "ui-state")
+            return TryParseSimple(args, "ui-state", needsJobId: false, out command, out error);
+        if (action == "screenshot")
+            return TryParseScreenshot(args, out command, out error);
         if (action == "list")
             return TryParseList(args, out command, out error);
         if (action is "status" or "result" or "cancel" or "start")
@@ -251,12 +263,60 @@ static class Program
         return true;
     }
 
+    static bool TryParseScreenshot(string[] args, out CliCommand? command, out string? error)
+    {
+        command = null;
+        error = null;
+        bool json = false;
+        string? outputPath = null;
+
+        for (int i = 1; i < args.Length; i++)
+        {
+            if (args[i] == "--json")
+            {
+                json = true;
+            }
+            else if (args[i] == "--output")
+            {
+                if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
+                {
+                    error = "--output 后需要提供 PNG 路径。";
+                    return false;
+                }
+                try
+                {
+                    outputPath = Path.GetFullPath(args[i]);
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    error = $"无效截图路径：{ex.Message}";
+                    return false;
+                }
+            }
+            else
+            {
+                error = $"未知参数：{args[i]}";
+                return false;
+            }
+        }
+
+        command = new CliCommand(new DesktopCommandRequest
+        {
+            Action = "screenshot",
+            ScreenshotPath = outputPath,
+            Activate = false,
+        }, json);
+        return true;
+    }
+
     static void PrintUsage()
     {
         Console.WriteLine("Whisper Desktop 控制工具");
         Console.WriteLine();
         Console.WriteLine("用法：");
         Console.WriteLine("  whisperctl ping [--json]");
+        Console.WriteLine("  whisperctl ui-state [--json]");
+        Console.WriteLine("  whisperctl screenshot [--output <png路径>] [--json]");
         Console.WriteLine("  whisperctl submit <文件或目录>... [--start] [--wait] [--request-id ID] [--json] [--no-activate]");
         Console.WriteLine("  whisperctl transcribe <文件或目录>... [--request-id ID] [--json] [--no-activate]");
         Console.WriteLine("  whisperctl status <job-id> [--json]");

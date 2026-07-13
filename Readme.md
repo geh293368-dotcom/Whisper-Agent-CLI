@@ -218,9 +218,11 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 .\whisperctl.exe result <job-id> --json
 .\whisperctl.exe cancel <job-id> --json
 .\whisperctl.exe list --json
+.\whisperctl.exe ui-state --json
+.\whisperctl.exe screenshot --output "D:\Temp\whisper-ui.png" --json
 ```
 
-`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait`、`--request-id` 或 `--no-activate`。任务记录保存在 `%LOCALAPPDATA%\WhisperDesktop\jobs.json`，桌面端重启后仍可凭 `jobId` 查询。协议说明见 [第一阶段](docs/agent-control-phase-1.md) 和 [第二阶段](docs/agent-control-phase-2.md)。
+`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait`、`--request-id` 或 `--no-activate`。`ui-state` 返回当前页面、焦点和可见控件，`screenshot` 用 WebView2 原生能力捕获当前 React 界面。任务记录保存在 `%LOCALAPPDATA%\WhisperDesktop\jobs.json`，桌面端重启后仍可凭 `jobId` 查询。协议说明见 [第一阶段](docs/agent-control-phase-1.md)、[第二阶段](docs/agent-control-phase-2.md) 和 [界面观察能力](docs/agent-ui-observability.md)。
 
 ### 6. 运行前的注意事项
 

@@ -33,6 +33,84 @@ public enum OutputLocationMode
 public partial class MainWindow : Window
 {
     const int MaxInMemoryLogCharacters = 200_000;
+    const string UiSnapshotScript = """
+        (() => {
+          const root = document.querySelector('[data-agent-page]');
+          const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+          const isVisible = element => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const inferredRole = element => {
+            const explicit = element.getAttribute('role');
+            if (explicit) return explicit;
+            const tag = element.tagName.toLowerCase();
+            if (tag === 'button') return 'button';
+            if (tag === 'select') return 'combobox';
+            if (tag === 'textarea') return 'textbox';
+            if (tag === 'a') return 'link';
+            if (tag === 'input') {
+              const type = (element.getAttribute('type') || 'text').toLowerCase();
+              return type === 'checkbox' || type === 'radio' ? type : 'textbox';
+            }
+            return tag;
+          };
+          const accessibleName = element => {
+            const labelledBy = element.getAttribute('aria-labelledby');
+            const labelledText = labelledBy
+              ? labelledBy.split(/\s+/).map(id => document.getElementById(id)?.innerText || '').join(' ')
+              : '';
+            const labelText = element.labels?.length ? Array.from(element.labels).map(label => label.innerText).join(' ') : '';
+            return normalize(
+              element.getAttribute('aria-label') || labelledText || labelText ||
+              element.getAttribute('title') || element.innerText || element.getAttribute('placeholder'))
+              .slice(0, 300);
+          };
+          const describe = element => {
+            if (!(element instanceof HTMLElement)) return null;
+            const selected = element.getAttribute('aria-selected') === 'true' ||
+              element.getAttribute('aria-current') === 'page' || element.matches(':checked') ||
+              element.classList.contains('active');
+            return {
+              agentId: element.dataset.agentId || null,
+              role: inferredRole(element),
+              name: accessibleName(element) || null,
+              tag: element.tagName.toLowerCase(),
+              type: element.getAttribute('type'),
+              disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true'),
+              selected
+            };
+          };
+          const dialog = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], .modal'))
+            .find(isVisible);
+          const error = Array.from(document.querySelectorAll('.error-banner, [role="alert"]')).find(isVisible);
+          const controls = Array.from(document.querySelectorAll(
+            'button, input, select, textarea, a[href], [role="button"], [role="tab"], [role="checkbox"], [role="radio"]'))
+            .filter(isVisible)
+            .slice(0, 200)
+            .map(describe)
+            .filter(Boolean);
+          return {
+            capturedAtUtc: new Date().toISOString(),
+            windowActive: document.hasFocus(),
+            windowState: '',
+            page: root?.dataset.agentPage || null,
+            panel: root?.dataset.agentPanel || null,
+            focusedElement: document.activeElement === document.body || document.activeElement === document.documentElement
+              ? null
+              : describe(document.activeElement),
+            dialog: dialog ? normalize(dialog.innerText).slice(0, 1000) : null,
+            error: error ? normalize(error.innerText).slice(0, 1000) : null,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            deviceScaleFactor: window.devicePixelRatio || 1,
+            screenshotPath: null,
+            controls
+          };
+        })()
+        """;
     static readonly TimeSpan ProgressUpdateInterval = TimeSpan.FromMilliseconds(200);
     static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -283,6 +361,8 @@ public partial class MainWindow : Window
         string action = request.Action.ToLowerInvariant();
         if (action == "ping")
             return CreateDesktopResponse(request, [], true, "Whisper Desktop 已连接。", null);
+        if (action is "ui-state" or "screenshot")
+            return await HandleUiObservationCommandAsync(request, action == "screenshot", cancellationToken);
         if (action == "list")
         {
             TranscriptionJob[] recentJobs = jobs
@@ -299,6 +379,107 @@ public partial class MainWindow : Window
             return DesktopCommandResponse.Failure($"未知命令：{request.Action}", "unknown_action", request.RequestId);
 
         return await HandleSubmitCommandAsync(request, cancellationToken);
+    }
+
+    async Task<DesktopCommandResponse> HandleUiObservationCommandAsync(
+        DesktopCommandRequest request,
+        bool captureScreenshot,
+        CancellationToken cancellationToken)
+    {
+        if (WebView.CoreWebView2 is null)
+            return DesktopCommandResponse.Failure("界面尚未完成初始化。", "ui_unavailable", request.RequestId);
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string? screenshotPath = null;
+            if (captureScreenshot)
+            {
+                screenshotPath = ResolveScreenshotPath(request.ScreenshotPath);
+                string? directory = Path.GetDirectoryName(screenshotPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                    if (string.IsNullOrWhiteSpace(request.ScreenshotPath))
+                        CleanupOldAgentCaptures(directory);
+                }
+
+                await using var stream = new FileStream(
+                    screenshotPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    bufferSize: 64 * 1024,
+                    useAsync: true);
+                await WebView.CoreWebView2.CapturePreviewAsync(
+                    CoreWebView2CapturePreviewImageFormat.Png,
+                    stream);
+            }
+
+            string snapshotJson = await WebView.CoreWebView2.ExecuteScriptAsync(UiSnapshotScript);
+            DesktopUiSnapshot? snapshot = JsonSerializer.Deserialize<DesktopUiSnapshot>(
+                snapshotJson,
+                DesktopCommandProtocol.JsonOptions);
+            if (snapshot is null)
+                return DesktopCommandResponse.Failure("界面返回了无效的观察结果。", "ui_invalid_response", request.RequestId);
+
+            snapshot = snapshot with
+            {
+                CapturedAtUtc = DateTime.UtcNow,
+                WindowActive = IsActive,
+                WindowState = WindowState.ToString().ToLowerInvariant(),
+                ScreenshotPath = screenshotPath,
+            };
+            return new DesktopCommandResponse
+            {
+                RequestId = request.RequestId,
+                Success = true,
+                Message = captureScreenshot ? "已捕获当前界面。" : "已读取当前界面状态。",
+                Ui = snapshot,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        {
+            return DesktopCommandResponse.Failure(ex.Message, "ui_capture_failed", request.RequestId);
+        }
+    }
+
+    static string ResolveScreenshotPath(string? requestedPath)
+    {
+        if (string.IsNullOrWhiteSpace(requestedPath))
+        {
+            string captureDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "WhisperDesktop",
+                "agent-captures");
+            return Path.Combine(captureDirectory, $"ui-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png");
+        }
+
+        string fullPath = Path.GetFullPath(requestedPath);
+        if (!string.Equals(Path.GetExtension(fullPath), ".png", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("截图输出路径必须使用 .png 扩展名。", nameof(requestedPath));
+        return fullPath;
+    }
+
+    static void CleanupOldAgentCaptures(string captureDirectory)
+    {
+        try
+        {
+            DateTime cutoffUtc = DateTime.UtcNow.AddDays(-7);
+            foreach (string file in Directory.EnumerateFiles(captureDirectory, "ui-*.png"))
+            {
+                if (File.GetLastWriteTimeUtc(file) < cutoffUtc)
+                    File.Delete(file);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Screenshot cleanup is best effort and must not block UI observation.
+        }
     }
 
     async Task<DesktopCommandResponse> HandleSubmitCommandAsync(

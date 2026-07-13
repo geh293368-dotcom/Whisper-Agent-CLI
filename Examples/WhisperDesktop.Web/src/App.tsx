@@ -296,15 +296,19 @@ function App() {
       : '不可用'
 
   return (
-    <div className={`app-shell ui-font-${state.uiScale || 'medium'}`}>
+    <div
+      className={`app-shell ui-font-${state.uiScale || 'medium'}`}
+      data-agent-page={page}
+      data-agent-panel={page === 'batch' ? previewTab : undefined}
+    >
       <aside className="sidebar">
         <button className="brand" type="button" onClick={openAbout} aria-label="打开关于页面" title="关于 Whisper Desktop">
           <AppLogo size="small" className="brand-mark" /><span><strong>Whisper</strong><small>Desktop Studio</small></span>
         </button>
         <nav>
-          <NavButton active={page === 'batch'} label="批量字幕" icon="queue" onClick={() => setPage('batch')} />
-          <NavButton active={page === 'live'} label="实时字幕" icon="mic" onClick={() => setPage('live')} />
-          <NavButton active={page === 'settings'} label="模型与设置" icon="settings" onClick={() => setPage('settings')} />
+          <NavButton agentId="nav.batch" active={page === 'batch'} label="批量字幕" icon="queue" onClick={() => setPage('batch')} />
+          <NavButton agentId="nav.live" active={page === 'live'} label="实时字幕" icon="mic" onClick={() => setPage('live')} />
+          <NavButton agentId="nav.settings" active={page === 'settings'} label="模型与设置" icon="settings" onClick={() => setPage('settings')} />
         </nav>
         <div className="sidebar-status">
           <div className="sidebar-status-line status-line">
@@ -335,8 +339,8 @@ function App() {
   )
 }
 
-function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: LineIconName; onClick(): void }) {
-  return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}><LineIcon name={icon} className="nav-line-icon" />{label}</button>
+function NavButton({ agentId, active, label, icon, onClick }: { agentId: string; active: boolean; label: string; icon: LineIconName; onClick(): void }) {
+  return <button data-agent-id={agentId} aria-current={active ? 'page' : undefined} className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}><LineIcon name={icon} className="nav-line-icon" />{label}</button>
 }
 
 type Command = (action: string, payload?: unknown) => void

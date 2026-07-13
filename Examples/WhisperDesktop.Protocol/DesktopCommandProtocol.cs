@@ -59,10 +59,39 @@ public sealed record DesktopCommandRequest
     public string[] Paths { get; init; } = [];
     public string? JobId { get; init; }
     public string? ClientRequestId { get; init; }
+    public string? ScreenshotPath { get; init; }
     public int Limit { get; init; } = 100;
     public bool Start { get; init; }
     public bool Wait { get; init; }
     public bool Activate { get; init; } = true;
+}
+
+public sealed record DesktopUiElement
+{
+    public string? AgentId { get; init; }
+    public string? Role { get; init; }
+    public string? Name { get; init; }
+    public string? Tag { get; init; }
+    public string? Type { get; init; }
+    public bool Disabled { get; init; }
+    public bool Selected { get; init; }
+}
+
+public sealed record DesktopUiSnapshot
+{
+    public DateTime CapturedAtUtc { get; init; }
+    public bool WindowActive { get; init; }
+    public string WindowState { get; init; } = string.Empty;
+    public string? Page { get; init; }
+    public string? Panel { get; init; }
+    public DesktopUiElement? FocusedElement { get; init; }
+    public string? Dialog { get; init; }
+    public string? Error { get; init; }
+    public int ViewportWidth { get; init; }
+    public int ViewportHeight { get; init; }
+    public double DeviceScaleFactor { get; init; }
+    public string? ScreenshotPath { get; init; }
+    public DesktopUiElement[] Controls { get; init; } = [];
 }
 
 public sealed record DesktopCommandJob
@@ -94,6 +123,7 @@ public sealed record DesktopCommandResponse
     public string Message { get; init; } = string.Empty;
     public string? ErrorCode { get; init; }
     public DesktopCommandJob[] Jobs { get; init; } = [];
+    public DesktopUiSnapshot? Ui { get; init; }
 
     public static DesktopCommandResponse Failure(string message, string errorCode, string? requestId = null) => new()
     {
