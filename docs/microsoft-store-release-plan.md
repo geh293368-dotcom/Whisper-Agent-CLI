@@ -2,7 +2,7 @@
 
 ## 1. 文档目的
 
-本文用于指导 WhisperDesktop 从当前免安装便携版演进为可提交 Microsoft Store 的正式发行版。
+本文用于指导现有工程（当前开发代号 `WhisperDesktop`）从免安装便携版演进为可提交 Microsoft Store 的正式发行版。正式产品名在 M0 冻结；开发代号不等于最终商店品牌。
 
 商店发行版不是另一套产品，也不应分叉出独立功能代码。它继续复用现有的 WPF + WebView2 + React UI、WhisperNet、D3D11、whisper.cpp CPU/CUDA 和本地 Agent 协议，只增加发行所需的打包、本地化、首装体验、合规材料和认证测试。
 
@@ -54,7 +54,7 @@
 - 当前默认引擎为 CUDA，普通认证虚拟机通常没有 NVIDIA GPU。
 - React 与 WPF 的用户可见文本大量直接写在源码中，没有统一的 i18n/资源系统。
 - 当前没有正式隐私政策、在线 AI 明示授权和“报告不当 AI 输出”入口。
-- EXE 的产品名、公司名、图标和版本仍接近工程默认值。
+- EXE 的产品名、公司名、图标和版本仍接近工程默认值；`WhisperDesktop` 也与原始项目及其他同类产品重名，不适合作为最终商店品牌。
 - 根 README 中仍有 whisper.cpp 旧版本和“无需任何额外运行时”等过时或互相冲突的描述。
 - 尚未形成完整的 `ThirdPartyNotices.txt` 和模型来源/哈希清单。
 
@@ -327,7 +327,111 @@ Models/MODEL-INFO.json
 
 公开 GitHub 源码地址和准确提交号应写入关于页或许可证说明，满足上游通知和源码获取要求。
 
-## 9. 商店元数据与素材
+## 9. 产品定位、命名与基础包装
+
+### 9.1 改名结论
+
+正式公开发行时，建议停止把 `WhisperDesktop` 作为用户可见主品牌，改用“独立品牌名 + 功能副标题”。原因不是单纯追求新鲜感：
+
+- `WhisperDesktop` 已经是原始 Const-me 项目和历史教程使用的名称；当前网络上也存在使用 `Whisper Desktop` 的其他语音转文字产品，搜索结果很难区分。
+- 名称只描述了底层模型和运行形态，没有表达批量文件、本地处理、字幕输出和后续校正工作流。
+- OpenAI 当前品牌规范不允许把模型名称用于应用标题，并要求第三方产品避免暗示官方关系或用户混淆。
+- 先建立独立品牌，可以在未来支持其他语音模型或本地文本模型时继续沿用，不必再次改名。
+
+`WhisperDesktop` 可以继续作为仓库、解决方案和兼容目录的开发代号，但不进入商店产品标题、主图标文字或主要宣传标题。
+
+### 9.2 真实定位边界
+
+首版包装只能使用已经实现或在首发里程碑中明确交付的事实：
+
+| 类型 | 可以表达 | 不能直接承诺 |
+|---|---|---|
+| 产品本质 | Windows 本地语音转文字与字幕工作台 | 官方 OpenAI/Microsoft 产品 |
+| 核心场景 | 音视频文件、批量任务、麦克风转录 | 尚未实现的说话人分离、团队协作或云同步 |
+| 隐私 | 本地转录默认不上传媒体；在线 AI 需用户主动启用 | “任何情况下数据都不会离开设备” |
+| 性能 | 支持 CPU、D3D11，并可在兼容机器上使用 CUDA | 未经固定硬件基准验证的倍速和准确率数字 |
+| 输出 | SRT、VTT、文本及当前实际支持格式 | “支持所有媒体格式”或“专业级零错误字幕” |
+
+### 9.3 定位方向
+
+本轮先比较五种产品表达，不在尚未验证时把任何一句宣传语当成最终广告：
+
+| 方向 | 主要用户与使用时刻 | 真实依据 | 包装含义 | 风险 |
+|---|---|---|---|---|
+| **本地转录工作台（推荐主线）** | 学生、创作者、研究者在 Windows 上处理课程、访谈和长音视频 | 离线首转录、批量任务、多格式输出、多后端 | 克制、可靠、任务导向，突出文件进入到字幕导出的闭环 | “工作台”略偏工具型，需要截图证明易用性 |
+| 批量字幕生产工具 | 视频创作者和字幕整理人员集中处理目录 | 批次队列、SRT/VTT、进度和日志 | 强调队列、进度、输出目录与可控性 | 会缩窄普通语音转文字用户的理解 |
+| 隐私优先离线转录 | 处理访谈、会议和内部素材的个人用户 | 默认本地推理、无账号也可使用 | 强调本机、无按分钟计费和用户控制 | 在线 AI 是可选功能，不能写成绝对“永不联网” |
+| 硬件加速专业工具 | 有 NVIDIA GPU 或关注长文件速度的高级用户 | CPU、D3D11、CUDA 三类路径 | 展示引擎选择、硬件检测和性能透明度 | 不能把 CUDA 当成所有电脑的默认能力 |
+| AI 字幕整理工作流 | 希望转录后继续校正、术语处理的内容工作者 | 已有可选 AI 字幕优化基础 | 为后续术语库和本地模型留出空间 | 首版不应让尚未稳定的未来功能盖过转录主流程 |
+
+首发采用第一种作为主定位，吸收第二种的“批量字幕”证据和第三种的“默认本地”承诺。CUDA 与在线 AI 放在功能层，不放进主品牌名。
+
+### 9.4 名称架构与暂时候选
+
+推荐使用可独立检索的核心词，并用副标题解释功能：
+
+```text
+核心品牌：Tinglu（暂时候选，尚未在 Partner Center 预留）
+zh-CN：Tinglu 听录 — 本地语音转文字
+en-US：Tinglu — Local Transcription Studio
+```
+
+`Tinglu` 目前只作为命名方向种子，不是已通过商标审查的最终名称。“听录”适合帮助中文用户理解含义，但属于描述性较强的词，不应单独承担全球品牌识别。
+
+最终名称必须同时满足：
+
+1. 不包含 `Whisper`、`OpenAI`、`GPT`、`Microsoft` 或其他模型/厂商品牌作为产品标题主体；
+2. 中英文都能读写，口头传播不容易拼错；
+3. 搜索引擎、GitHub、Microsoft Store 和主流软件下载站没有明显同类产品冲突；
+4. 在 Partner Center 分别检查并预留 `zh-CN`、`en-US` 所需名称；
+5. 完成中国及计划发行地区的基础商标检索，并检查域名、GitHub 仓库名和社交账号；
+6. 名称可覆盖未来非 Whisper 模型、字幕校正和术语工作流。
+
+如果 `Tinglu` 无法预留或存在商标风险，应更换核心造词，而不是通过追加 `AI Pro`、`Official`、`for Whisper` 等通用后缀勉强规避冲突。
+
+### 9.5 首版最小品牌包
+
+首版只做足以建立可信独立产品识别的轻量包装，不重写整个 UI：
+
+- 一个冻结并预留的产品名，以及中英文一致的名称规则；
+- 中文一句话：`让音视频在本机变成可用字幕。`；
+- 英文一句话：`Turn audio and video into usable text on your PC.`；
+- 三项固定证据：默认本地转录、文件/批量/麦克风入口、SRT/VTT/文本输出；
+- 一枚原创应用图标，视觉可结合“声音波形 + 文档/字幕框”，不得模仿 OpenAI 图形；
+- 一套克制的主色、强调色、图标尺寸和浅色/深色使用规则；
+- 启动画面、窗口标题、任务栏、关于页、帮助页、MSIX 和 Store listing 使用同一名称与图标；
+- 四张真实工作流截图，优先展示添加文件、批量进度、字幕结果和本地/引擎设置；
+- 支持、隐私、许可证和版本信息形成统一页脚或关于页入口。
+
+商店短描述应先说明用途，再说明本地特性，不堆砌 `AI`、`Whisper`、`CUDA` 等技术关键词。模型和后端可以在完整描述及第三方声明中准确说明。
+
+### 9.6 改名实施边界
+
+第一阶段只修改用户可见层：
+
+- Store 产品名、MSIX DisplayName、EXE 产品信息；
+- 窗口标题、左上角品牌、关于页、帮助页和 README；
+- 图标、截图、发布包名和安装显示名。
+
+首版暂时保留以下内部兼容名称：
+
+- 仓库和解决方案结构；
+- C# 命名空间与程序集兼容标识；
+- `%LOCALAPPDATA%\WhisperDesktop` 配置、模型和日志目录；
+- 既有配置字段、Named Pipe 和脚本路径。
+
+品牌稳定后再单独规划内部迁移，并为旧配置目录提供兼容读取或一次性迁移。具体界面视觉原则继续参考 [产品体验、品牌与关于页规划](product-experience-branding.md)。
+
+### 9.7 命名与包装完成标准
+
+- [ ] 最终名称通过搜索冲突、商标初筛和 Partner Center 可用性检查；
+- [ ] `zh-CN`、`en-US` 名称均已预留并记录所有者；
+- [ ] 产品名、一句话、三项证据和禁用表述形成一页品牌简表；
+- [ ] 图标在 16、32、48、256 像素及任务栏/商店场景可辨识；
+- [ ] 应用、包、帮助、隐私、截图和 listing 不再混用旧产品名；
+- [ ] 第三方声明准确说明使用 Whisper/whisper.cpp，但不暗示官方关系。
+
+## 10. 商店元数据与素材
 
 首发准备两套 listing：
 
@@ -358,7 +462,63 @@ en-US
 - 支持的 Windows 与处理器架构；
 - 当前不支持的功能或硬件。
 
-## 10. 可访问性与桌面质量
+## 11. 用户帮助与支持文档
+
+### 11.1 是否需要
+
+Microsoft Store 不要求每个简单工具都附带一本厚重手册，但公开发行版仍应提供简明帮助。该应用虽然核心动作是语音识别，用户仍会遇到模型、引擎、输出目录、界面/转录语言、在线 AI 和日志反馈等选择；只依赖 README 会把开发者信息与用户操作混在一起。
+
+帮助文档属于 **P0 发布材料**，首版以解决“安装后怎样完成任务、失败后怎样恢复”为目标，不扩写成技术百科。
+
+### 11.2 交付物
+
+使用 Markdown 作为唯一内容源：
+
+```text
+docs/user-guide.zh-CN.md
+docs/user-guide.en-US.md
+```
+
+同一内容需要两种入口：
+
+- 应用内“帮助”页使用随包离线 HTML 或内置 Markdown 渲染，断网时仍可阅读；
+- 公开支持页面部署同版内容，供 Store listing、搜索和用户分享链接使用。
+
+不把 PDF/Word 作为首要帮助格式。它们不利于版本同步、深链接和双语维护，需要时可由 Markdown 另行导出。
+
+### 11.3 首版目录
+
+1. 60 秒快速开始：添加文件、选择语言、开始转录、找到结果；
+2. 内置模型与其他模型：质量、大小、下载、删除和损坏恢复；
+3. 批量文件与文件夹转录；
+4. 麦克风实时转录与 Windows 权限；
+5. CPU、D3D11、CUDA 的选择、要求和失败回退；
+6. SRT、VTT、文本输出及输出目录；
+7. 界面语言与转录语言的区别；
+8. 可选在线 AI、发送内容、费用和隐私边界；
+9. 常见问题：无模型、无声音、速度慢、乱码、磁盘不足和断网；
+10. 查看日志、复制诊断摘要、反馈问题和查看版本。
+
+### 11.4 写作与维护规则
+
+- `zh-CN` 与 `en-US` 章节结构和截图编号保持一致；
+- 每个主要任务采用“目的 → 操作 → 结果 → 常见失败”的短结构；
+- 只写当前发行版已经存在的按钮、路径和行为；
+- 截图使用真实 Release 候选版，敏感路径、用户名、API Key 和用户媒体必须脱敏；
+- 帮助页显示适用版本，并在功能或 UI 文案变更的同一个 PR 中更新；
+- 错误提示尽量提供对应帮助锚点，例如 `help://models/model-not-found`；
+- 支持入口不得默认附带原始字幕、音频、API Key 或完整本机路径，只附带用户确认过的诊断摘要。
+
+### 11.5 完成标准
+
+- [ ] 中英文快速开始能让新用户在干净机器上完成一次离线转录；
+- [ ] 十个首版主题均有可操作说明，按钮名称与当前 UI 一致；
+- [ ] 应用内帮助断网可打开，Store listing 的支持 URL 可公开访问；
+- [ ] 所有截图和示例不包含隐私数据；
+- [ ] 至少由一名未参与开发的人按文档完成安装、首转录和故障恢复；
+- [ ] 帮助、隐私政策、第三方声明和认证测试说明彼此独立但互相链接。
+
+## 12. 可访问性与桌面质量
 
 P0/P1 验证项：
 
@@ -371,9 +531,9 @@ P0/P1 验证项：
 - 没有模型、模型损坏、磁盘不足、断网和 AI 超时时保持响应；
 - 关闭运行中任务时能够安全取消或明确确认。
 
-## 11. 测试与认证矩阵
+## 13. 测试与认证矩阵
 
-### 11.1 自动化检查
+### 13.1 自动化检查
 
 - `npm run build`；
 - `dotnet run --project Tools/ModernUiTests/ModernUiTests.csproj`；
@@ -381,8 +541,9 @@ P0/P1 验证项：
 - 英语模式中文硬编码扫描，维护明确白名单；
 - MSIX 产物文件、版本、内置模型大小与哈希检查；
 - `ThirdPartyNotices.txt` 和隐私 URL 存在性检查。
+- 中英文帮助章节、锚点和应用内离线资源一致性检查。
 
-### 11.2 干净机器测试
+### 13.2 干净机器测试
 
 至少覆盖：
 
@@ -400,11 +561,15 @@ P0/P1 验证项：
 
 最终候选包运行 Windows App Certification Kit，并保存结果报告和失败修正记录。
 
-## 12. 里程碑
+## 14. 里程碑
 
-### M0：发行决策冻结
+### M0：产品与发行决策冻结
 
-- 确认产品名和 Publisher；
+- 选定独立品牌名和功能副标题；
+- 完成同类产品搜索、基础商标/域名/GitHub 检索；
+- 在 Partner Center 预留中文和英文产品名；
+- 确认 Publisher、支持主体和版权署名；
+- 冻结一句话、三项证据、禁用表述和图标方向；
 - 确认最小 Windows 版本；
 - 确认内置 `tiny` 还是 `base`；
 - 确认首版是否包含 CUDA 与 `whisperctl`；
@@ -448,6 +613,8 @@ P0/P1 验证项：
 - 在线 AI 授权与撤销；
 - AI 输出报告入口；
 - 第三方许可证；
+- 中文/英文用户帮助、应用内离线帮助和公开支持 URL；
+- 最小品牌包、图标规格和名称一致性检查；
 - 中文/英语 listing、截图和认证备注。
 
 完成标准：Partner Center 所需文本、URL 和素材齐全。
@@ -462,25 +629,28 @@ P0/P1 验证项：
 
 完成标准：商店审核通过，或得到可复现、可修正的单一认证阻塞。
 
-## 13. 工作量评估
+## 15. 工作量评估
 
 在不重写 UI、不同时支持 ARM64 和七种语言的前提下：
 
 | 工作包 | 估算 |
 |---|---:|
+| 命名决策、预留与最小品牌包 | 1–2 个工作日 |
 | 双语资源体系与中文/英语迁移 | 3–5 个工作日 |
 | MSIX、自包含运行时、WebView2 修正 | 2–4 个工作日 |
 | 内置模型、首装和硬件回退 | 2–4 个工作日 |
+| 中英文用户帮助与应用内离线入口 | 1–3 个工作日 |
 | 隐私、AI 合规、许可证和 listing | 2–4 个工作日 |
 | 干净机器、WACK 与首轮修正 | 2–4 个工作日 |
 
-存在并行空间，但首次商店版仍应按 **约 10–15 个有效开发工作日** 规划，并为账户验证、商店审核和第一次退回修正预留额外日历时间。
+存在并行空间，且品牌、帮助和合规材料可以与工程开发部分并行。首次商店版应按 **约 12–18 个有效开发工作日** 规划，并为账户验证、名称预留、商店审核和第一次退回修正预留额外日历时间。
 
-## 14. 首版 Definition of Done
+## 16. 首版 Definition of Done
 
 只有同时满足以下条件，才称为“Microsoft Store 首版完成”：
 
 - [ ] `zh-CN` 和 `en-US` UI、原生错误、隐私与 listing 完整；
+- [ ] 独立产品名已预留，图标、应用、帮助、包和 listing 命名一致；
 - [ ] UI 语言和转录语言互不干扰；
 - [ ] `.msixupload` 可重复构建，版本和身份正确；
 - [ ] 干净 Windows x64 无需预装 .NET 即可启动；
@@ -490,21 +660,24 @@ P0/P1 验证项：
 - [ ] 在线 AI 有明示授权、撤销和报告入口；
 - [ ] 模型及第三方组件的来源、许可证和哈希完整；
 - [ ] 英语模式无未批准的中文残留；
+- [ ] 中文和英文帮助可在应用内离线访问，公开支持 URL 可用；
 - [ ] 自动化测试与 WACK 通过；
 - [ ] 中文、英语截图和认证人员测试说明齐全。
 
-## 15. 官方参考
+## 17. 官方参考
 
 - [微软 Win32 应用商店分发方式](https://learn.microsoft.com/en-us/windows/apps/distribute-through-store/how-to-distribute-your-win32-app-through-microsoft-store)
 - [使用 Visual Studio 为桌面应用建立 MSIX](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-packaging-dot-net)
 - [Microsoft Store Policies](https://learn.microsoft.com/en-us/windows/apps/publish/store-policies)
 - [MSIX 包要求](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements)
 - [MSIX 多语言 Store listing](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/add-and-edit-store-listing-info)
+- [Partner Center 管理和预留 MSIX 应用名称](https://learn.microsoft.com/en-us/windows/apps/publish/partner-center/msix/manage-app-name-reservations)
 - [导入和导出多语言 Store listing](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/import-and-export-store-listings)
 - [WPF 全球化与本地化](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/wpf-globalization-and-localization-overview)
 - [WebView2 User Data Folder](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder)
 - [MSIX 桌面应用运行与文件系统行为](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)
 - [Windows App Certification Kit](https://learn.microsoft.com/en-us/windows/uwp/debug-test-perf/windows-app-certification-kit)
+- [OpenAI 品牌与模型名称使用规范](https://openai.com/brand/)
+- [原始 Const-me/Whisper 项目](https://github.com/Const-me/Whisper)
 - [OpenAI Whisper LICENSE](https://github.com/openai/whisper/blob/main/LICENSE)
 - [whisper.cpp GGML 模型列表与大小](https://huggingface.co/ggerganov/whisper.cpp)
-
