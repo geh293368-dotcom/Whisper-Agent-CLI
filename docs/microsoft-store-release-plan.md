@@ -371,12 +371,12 @@ Models/MODEL-INFO.json
 推荐使用可独立检索的核心词，并用副标题解释功能：
 
 ```text
-核心品牌：Tinglu（暂时候选，尚未在 Partner Center 预留）
-zh-CN：Tinglu 听录 — 本地语音转文字
-en-US：Tinglu — Local Transcription Studio
+核心品牌：TINGLU / 听录（暂定工作名称，尚未在 Partner Center 预留）
+zh-CN：听录 — 本地语音转文字
+en-US：TINGLU — Local Transcription Studio
 ```
 
-`Tinglu` 目前只作为命名方向种子，不是已通过商标审查的最终名称。“听录”适合帮助中文用户理解含义，但属于描述性较强的词，不应单独承担全球品牌识别。
+`听录 / TINGLU` 作为当前发行版的暂定工作品牌，直接表达“听见声音并记录为文字”，同时覆盖文件转录、麦克风识别和字幕输出。它不是已通过商标审查或商店预留的最终法律名称；正式提交前仍需完成本节的名称检查。
 
 最终名称必须同时满足：
 
@@ -387,7 +387,7 @@ en-US：Tinglu — Local Transcription Studio
 5. 完成中国及计划发行地区的基础商标检索，并检查域名、GitHub 仓库名和社交账号；
 6. 名称可覆盖未来非 Whisper 模型、字幕校正和术语工作流。
 
-如果 `Tinglu` 无法预留或存在商标风险，应更换核心造词，而不是通过追加 `AI Pro`、`Official`、`for Whisper` 等通用后缀勉强规避冲突。
+如果 `听录 / TINGLU` 无法预留或存在商标风险，应更换核心造词，而不是通过追加 `AI Pro`、`Official`、`for Whisper` 等通用后缀勉强规避冲突。
 
 ### 9.5 首版最小品牌包
 

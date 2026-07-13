@@ -9,6 +9,7 @@
     <Platforms>x64</Platforms>
     <AssemblyName>WhisperDesktop.Modern</AssemblyName>
     <RootNamespace>WhisperDesktop.Modern</RootNamespace>
+    <ApplicationIcon>Assets\Tinglu.ico</ApplicationIcon>
     <BuildWebFrontendOnBuild Condition="'$(BuildWebFrontendOnBuild)' == '' and '$(Configuration)' == 'Release'">true</BuildWebFrontendOnBuild>
     <BuildWebFrontendOnBuild Condition="'$(BuildWebFrontendOnBuild)' == ''">false</BuildWebFrontendOnBuild>
     <BuildWhisperCppBackendOnBuild Condition="'$(BuildWhisperCppBackendOnBuild)' == '' and '$(Configuration)' == 'Release'">true</BuildWhisperCppBackendOnBuild>

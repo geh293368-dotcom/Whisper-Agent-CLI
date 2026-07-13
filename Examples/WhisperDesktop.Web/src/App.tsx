@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { desktopBridge } from './bridge'
 import type { AppState, Job, LiveSegment, Page, Segment } from './types'
 import { ResizableTable, TableColumn } from './ResizableTable'
+import tingluIcon from './assets/tinglu-icon.png'
 
 const uiScaleOptions = [
   { id: 'small', name: '小' },
@@ -47,13 +48,7 @@ type SocialIconName = 'github' | 'youtube' | 'bilibili' | 'x' | 'wechat'
 function AppLogo({ size = 'small', className = '' }: { size?: AppLogoSize; className?: string }) {
   const classNames = ['app-logo', `app-logo-${size}`, className].filter(Boolean).join(' ')
   return <span className={classNames} aria-hidden="true">
-    <svg viewBox="0 0 48 48" focusable="false">
-      <rect className="app-logo-bg" x="4" y="4" width="40" height="40" rx="10" />
-      <path className="app-logo-wave" d="M14 25c2.8-8 5.7-12 8.8-12 3.3 0 4.5 7.5 7.4 7.5 1.8 0 2.9-2.4 3.8-5.5" />
-      <path className="app-logo-line" d="M13 31h22" />
-      <path className="app-logo-line" d="M17 36h14" />
-      <circle className="app-logo-dot" cx="31" cy="20.5" r="2.2" />
-    </svg>
+    <img src={tingluIcon} alt="" />
   </span>
 }
 
@@ -302,8 +297,8 @@ function App() {
       data-agent-panel={page === 'batch' ? previewTab : undefined}
     >
       <aside className="sidebar">
-        <button className="brand" type="button" onClick={openAbout} aria-label="打开关于页面" title="关于 Whisper Desktop">
-          <AppLogo size="small" className="brand-mark" /><span><strong>Whisper</strong><small>Desktop Studio</small></span>
+        <button className="brand" type="button" onClick={openAbout} aria-label="打开关于页面" title="关于 听录 TINGLU">
+          <AppLogo size="small" className="brand-mark" /><span><strong>听录</strong><small>TINGLU</small></span>
         </button>
         <nav>
           <NavButton agentId="nav.batch" active={page === 'batch'} label="批量字幕" icon="queue" onClick={() => setPage('batch')} />
@@ -615,7 +610,7 @@ function AboutPage({ state, command, onBack }: { state: AppState; command: Comma
 
   return <div className="page narrow-page about-page">
     <header className="page-header about-header">
-      <div><p className="eyebrow">ABOUT</p><h1>Whisper Desktop</h1><p>面向批量字幕与实时字幕的本地转写工作台。</p></div>
+      <div><p className="eyebrow">ABOUT</p><h1>听录 TINGLU</h1><p>面向批量字幕与实时字幕的本地转写工作台。</p></div>
       <button className="button about-back-button" onClick={onBack}><span aria-hidden="true">←</span>返回</button>
     </header>
 
@@ -624,8 +619,8 @@ function AboutPage({ state, command, onBack }: { state: AppState; command: Comma
         <AppLogo size="large" className="about-product-logo" />
         <div className="about-product-copy">
           <div className="about-title-row">
-            <h2>Whisper Desktop Studio</h2>
-            <span className="about-pill">本地 AI 字幕工作站</span>
+            <h2>听录</h2>
+            <span className="about-pill">本地语音转文字</span>
           </div>
           <p>把模型、任务队列、实时字幕、日志和字幕优化集中到一个桌面界面里，适合剪辑、教程和长素材转写流程。</p>
         </div>
