@@ -1,12 +1,14 @@
 # WhisperDesktop（Windows）
 
-WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字工具，
-基于 OpenAI Whisper 模型的 C/C++ 实现，可将音频、视频或麦克风输入转录为文本。
+WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字工具与自动化任务宿主，
+基于 OpenAI Whisper 模型的 C/C++ 实现，可将音频、视频或麦克风输入转录为文本。除了图形界面，
+它还提供 `whisperctl.exe`，让 Agent、脚本或剪辑软件复用桌面端已经加载的模型、GPU 和任务队列。
 
 本项目适合：
 - 会议/访谈录音整理
 - 课程、播客、视频的文字转写
 - 本地、离线的批量语音转录需求
+- Agent、脚本或剪辑软件发起的本机异步转录任务
 
 ---
 
@@ -27,8 +29,17 @@ WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字�
 ## 快速开始
 
 1. 在 **Releases** 页面下载 WhisperDesktop
-2. 解压后运行 `WhisperDesktop.exe`
+2. 解压后运行 `WhisperDesktop.Modern.exe`
 3. 首次使用请先下载并加载模型（推荐 `ggml-medium.bin`）
+
+如需从 Agent 或脚本调用，保持桌面端运行，然后在同一目录执行：
+
+```powershell
+.\whisperctl.exe ping --json
+.\whisperctl.exe transcribe "D:\media\lesson.mp4" --json --no-activate
+```
+
+完整命令、任务状态、JSON 合同和安全边界见 [Agent 与自动化接入指南](docs/agent-integration.md)。
 
 ---
 
@@ -37,26 +48,28 @@ WhisperDesktop 是一个运行在 **Windows 64 位**上的本地语音转文字�
 本项目采用现代混合架构，由 WPF 薄壳 + WebView2 + React 前端 + 多引擎后端组成：
 
 ```
+用户 ──→ React Web UI ── JSON 消息桥 ──┐
+                                       │
+Agent / 脚本 ──→ whisperctl.exe ── Named Pipe
+                                       │
+                                       ▼
 ┌─────────────────────────────────────────────────┐
-│           WPF 窗口 (WebView2 容器)                │
-│  ┌─────────────────────────────────────────────┐ │
-│  │         React Web UI (Vite + TypeScript)     │ │
-│  │    批量字幕 │ 实时字幕 │ 模型与设置             │ │
-│  └────────────────┬────────────────────────────┘ │
-│                   │ JSON 消息桥                    │
-│       ┌───────────┴───────────┐                   │
-│       │     WhisperNet (.NET) │                   │
-│       └───────────┬───────────┘                   │
-│                   │                               │
-│     ┌─────────────┼─────────────┐                 │
-│     ▼             ▼             ▼                 │
-│  CUDA 后端     CPU 后端     D3D11 后端             │
-│ (whisper.cpp) (whisper.cpp) (Whisper.dll)         │
+│       WPF + WebView2 桌面宿主（单实例）             │
+│  模型与配置 │ 串行任务队列 │ jobs.json │ UI 观察     │
+│                     │                           │
+│                WhisperNet (.NET)                │
+│                     │                           │
+│       ┌─────────────┼─────────────┐             │
+│       ▼             ▼             ▼             │
+│    CUDA 后端     CPU 后端     D3D11 后端         │
+│  (whisper.cpp) (whisper.cpp) (Whisper.dll)      │
 └─────────────────────────────────────────────────┘
 ```
 
 - **WPF + WebView2**：桌面窗口外壳，所有 UI 由内嵌的 Web 页面渲染
 - **React Web UI**：基于 Vite + React 19 + TypeScript 的现代前端
+- **whisperctl + Named Pipe**：仅限当前 Windows 用户的本机自动化入口，提供任务提交、查询、取消、结果读取和只读界面观察
+- **持久任务日志**：任务状态写入 `%LOCALAPPDATA%\WhisperDesktop\jobs.json`，桌面端重启后仍可凭 `jobId` 查询
 - **WhisperNet**：.NET 互操作层，提供模型加载、转录控制等接口
 - **推理引擎（可选三种）**：
 
@@ -205,7 +218,7 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 - `-c 0`：使用编号为 `0` 的录音设备
 - 可先通过 `-ld` 查看设备列表
 
-#### 从 Agent 或脚本控制已打开的桌面端
+#### 从 Agent、脚本或外部应用控制已打开的桌面端
 
 每日发布包同时提供 `whisperctl.exe`。它通过仅限当前 Windows 用户的本地命令通道，把文件送入正在运行的 WhisperDesktop，复用桌面端已经加载的模型、GPU 和任务队列。
 
@@ -222,7 +235,7 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 .\whisperctl.exe screenshot --output "D:\Temp\whisper-ui.png" --json
 ```
 
-`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait`、`--request-id` 或 `--no-activate`。`ui-state` 返回当前页面、焦点和可见控件，`screenshot` 用 WebView2 原生能力捕获当前 React 界面。任务记录保存在 `%LOCALAPPDATA%\WhisperDesktop\jobs.json`，桌面端重启后仍可凭 `jobId` 查询。协议说明见 [第一阶段](docs/agent-control-phase-1.md)、[第二阶段](docs/agent-control-phase-2.md) 和 [界面观察能力](docs/agent-ui-observability.md)。
+`transcribe` 会入队、开始转录并等待 JSON 结果；`submit` 默认只入队，可追加 `--start`、`--wait`、`--request-id` 或 `--no-activate`。`ui-state` 返回当前页面、焦点和可见控件，`screenshot` 用 WebView2 原生能力捕获当前 React 界面。任务记录保存在 `%LOCALAPPDATA%\WhisperDesktop\jobs.json`，桌面端重启后仍可凭 `jobId` 查询。当前规范见 [Agent 与自动化接入指南](docs/agent-integration.md)；[第一阶段](docs/agent-control-phase-1.md)、[第二阶段](docs/agent-control-phase-2.md)和[界面观察能力](docs/agent-ui-observability.md)保留为实现阶段记录。
 
 ### 6. 运行前的注意事项
 
@@ -265,12 +278,13 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 
 - 基于 Whisper 模型的本地语音识别
 - 支持批量文件转录与实时麦克风转录
-- Windows 原生实现：已原生兼容 MSVC v143 工具链，无需 Python 或任何额外运行时
+- Windows 原生实现：已兼容 MSVC v143 工具链，无需 Python；当前便携版需要 .NET 10 Desktop Runtime
 - **支持多种 GPU 加速方式**：推荐 CUDA（NVIDIA），同时兼容 Direct3D 11 全系显卡
 - 集成 **whisper.cpp v1.8.6** 推理引擎，支持 CUDA 与 CPU 双模式
 - 现代 Web 界面（React + WebView2），美观易用
 - **独家核心修复：彻底解决视频结尾处因音视频轨道长度不符引起的"大段静音死循环/幻觉"Bug，处理大型音视频稳如磐石。**
-- **智能体(Agent)命令行引擎：全新打造的 `whisper-cli.exe` 彻底解决 Windows 控制台输出中文 `????` 乱码问题，支持无颜色纯净输出，专为脚本调用与大模型自动化爬取而生。**
+- **Agent 与外部应用控制：`whisperctl.exe` 可复用桌面端模型、GPU、任务队列和持久任务记录，提供稳定 JSON、幂等提交、状态查询、取消、结果读取及只读界面观察。**
+- **独立命令行转录：`whisper-cli.exe` 与 `TranscribeCS` 不依赖桌面端，适合不需要复用桌面状态的单进程转录。**
 - 深度支持中文与粤语：优化多语言代码映射，提供原生粤语选项
 - 中文UI界面优化：细化输出格式后缀名提示，极致小白友好
 
@@ -282,6 +296,7 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 - **推荐显卡**：NVIDIA GPU（支持 CUDA，推荐 RTX 系列获得最高速度）
 - **兼容显卡**：任意支持 Direct3D 11 的 GPU（使用 D3D11 兼容引擎）
 - **CPU**：支持 AVX / F16C 指令集
+- **.NET**：当前便携版需要 .NET 10 Desktop Runtime
 - **运行时**：WebView2 Runtime（Windows 11 通常已内置）
 
 ---
@@ -291,13 +306,14 @@ dotnet run --project Examples\MicrophoneCS\MicrophoneCS.csproj -c Debug -p:Platf
 本项目基于上游 Whisper Windows 实现进行深度优化与二次开发，近期主要改动包括：
 
 - **全新现代界面**：基于 WPF + WebView2 + React 架构重写了整个桌面界面，支持批量任务队列、字幕预览、运行日志等功能。
-- **引入 whisper.cpp v1.8.6**：集成最新的 whisper.cpp 推理引擎，支持 CUDA 和 CPU 双模式，相比原 D3D11 后端大幅提速。
+- **本机自动化任务合同**：增加 `whisperctl.exe`、当前用户 Named Pipe、稳定 `jobId`、幂等请求、持久任务日志和只读界面观察，使 Agent、脚本及剪辑软件可以调用桌面转录能力。
+- **引入 whisper.cpp v1.8.6**：集成 whisper.cpp 推理引擎，支持 CUDA 和 CPU 双模式，相比原 D3D11 后端大幅提速。
 - **深度引擎Bug修复**：重写了 Media Foundation 的音频真实样本计算策略，并追加静态跳步启发式检测，双重防线彻底根除末尾静音陷阱现象。
 - **控制台完美汉化**：重写了 C++ 控制台 Locale 激活代码与文本流输出逻辑，摒弃容易引发撕裂宽字符的彩色打印流，实现纯净化中文打印。
 - 界面与交互体验优化，补充了 UI 选项后缀名标识。
 - 底层工程配置更迭，全面一键无缝适配更通用的 Visual Studio v143 编译工具链。
 
-> 本仓库侧重于"拿来即用"并**极度适合直接集成至现代自动化 AI Agent 智能体底层调用**。
+> 本仓库侧重于“拿来即用”的本地转录，也提供适合 Agent 和外部应用集成的本机自动化接口；当前不包含 MCP 或通用桌面操作能力。
 
 ---
 

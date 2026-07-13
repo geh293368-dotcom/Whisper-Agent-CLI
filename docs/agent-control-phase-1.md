@@ -1,5 +1,7 @@
 # Agent 控制能力：第一阶段
 
+> 本文是第一阶段实现记录。当前完整命令、JSON 字段和接入边界以 [Agent 与自动化接入指南](agent-integration.md) 为准。
+
 WhisperDesktop 第一阶段提供“单实例桌面端 + 本地命令通道”。目标是让脚本或 Agent 把媒体文件提交到已经运行的桌面端，复用已加载的模型、GPU 和任务队列。
 
 ## 使用方式
@@ -22,7 +24,7 @@ WhisperDesktop 第一阶段提供“单实例桌面端 + 本地命令通道”�
 
 `transcribe` 等价于 `submit --start --wait`。传入命令时默认唤起桌面窗口；Agent 后台调用可以追加 `--no-activate`。
 
-## 当前协议
+## 第一阶段协议
 
 - 传输：仅限当前 Windows 用户的 Named Pipe。
 - 协议版本：`1`。

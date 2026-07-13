@@ -1,5 +1,7 @@
 # Agent 界面观察能力
 
+> 本文记录界面观察层的实现与边界。完整接入流程以 [Agent 与自动化接入指南](agent-integration.md) 为准。
+
 WhisperDesktop 为 Agent 提供只读界面观察命令。它们复用现有本地 Named Pipe，不开放鼠标点击、键盘输入、任意 JavaScript 或通用 CDP 调用。
 
 ## 读取语义状态

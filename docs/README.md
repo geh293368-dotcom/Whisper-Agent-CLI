@@ -4,6 +4,9 @@
 
 ## 已实现
 
+- [Agent 与自动化接入指南](agent-integration.md)
+  - 当前规范入口：说明 `whisperctl.exe`、本地 Named Pipe、持久任务、JSON 合同、界面观察和安全边界。
+  - [第一阶段](agent-control-phase-1.md)、[第二阶段](agent-control-phase-2.md)和[界面观察能力](agent-ui-observability.md)作为实现阶段记录保留。
 - [任务完成时间估算与模型自动加载设计](task-progress-and-model-autoload.md)
   - 已实现批量字幕 ETA、预计完成时刻、未知时长提示、启动自动加载、加载已用时、取消加载和一次性保护。
 - [实时字幕功能设计](live-subtitles-design.md)
